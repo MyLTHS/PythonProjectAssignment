@@ -1,156 +1,315 @@
-from django import forms
 from django.utils import timezone
-from rest_framework.exceptions import ValidationError
+from rest_framework import serializers
 
-from . import models
-from .models import Folder, Label, FileItem
+from .models import ActivityLog, FileItem, Folder, Label, ShareLink
 
 
-class FolderForm(forms.ModelForm):
+class FolderSerializer(serializers.ModelSerializer):
     class Meta:
-        model = models.Folder
-        fields = ['name', 'parent']
+        model = Folder
+        fields = [
+            "id",
+            "name",
+            "parent",
+            "is_deleted",
+            "deleted_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "is_deleted",
+            "deleted_at",
+            "created_at",
+            "updated_at",
+        ]
 
-    def __init__(self,*args, owner = None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.owner = owner
+    def validate_name(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("Folder name cannot be empty.")
+        return value
 
-        if owner:
-            self.fields["parent"].queryset = Folder.objects.filter(
-                owner=owner,
-                is_deleted=False,
+    def validate(self, attrs):
+        request = self.context.get("request")
+        owner = request.user if request else None
+        parent = attrs.get("parent")
+
+        if not owner:
+            raise serializers.ValidationError("Authenticated user is required.")
+
+        if parent and parent.owner != owner:
+            raise serializers.ValidationError(
+                {"parent": "Parent folder must belong to the same owner."}
             )
 
-    def clean_name(self):
-        name = self.cleaned_data["name"].strip()
-        if not name:
-            raise forms.ValidationError("Please enter a name.")
-        return name
-
-    def clean(self):
-        cleaned_data = super().clean()
-        name = cleaned_data.get("name")
-        parent = cleaned_data.get("parent")
-        if not self.owner:
-            raise ValidationError("Owner is required.")
-        if parent and parent.owner != self.owner:
-            self.add_error("parent", "Parent folder must belong to the same owner.")
-
         if parent and parent.is_deleted:
-            self.add_error("parent", "Cannot place folder inside a deleted parent.")
+            raise serializers.ValidationError(
+                {"parent": "Cannot place folder inside a deleted parent."}
+            )
 
-        if self.instance.pk and parent == self.instance:
-            self.add_error("parent", "A folder cannot be its own parent.")
+        if self.instance and parent == self.instance:
+            raise serializers.ValidationError(
+                {"parent": "A folder cannot be its own parent."}
+            )
 
+        name = attrs.get("name", self.instance.name if self.instance else None)
         duplicate_qs = Folder.objects.filter(
-            owner = self.owner,
-            parent = parent,
-            name = name
+            owner=owner,
+            parent=parent,
+            name=name,
         )
 
-        if self.instance.pk:
+        if self.instance:
             duplicate_qs = duplicate_qs.exclude(pk=self.instance.pk)
 
         if name and duplicate_qs.exists():
-            self.add_error("name", "A folder with this name already exists in the same parent.")
-
-        return cleaned_data
-
-
-class FileMetadataForm(forms.ModelForm):
-    class Meta:
-        form = models.FileItem
-        fields = ['name', 'folder', 'description', 'label']
-
-    def __init__(self, *args,owner = None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.owner = owner
-
-        if owner:
-            self.fields["folder"].queryset = Folder.objects.filter(
-                owner=owner,
-                is_deleted=False,
+            raise serializers.ValidationError(
+                {"name": "A folder with this name already exists in the same parent."}
             )
-        self.fields["label"].queryset = Label.objects.all()
+
+        return attrs
+
+    def create(self, validated_data):
+        request = self.context["request"]
+        return Folder.objects.create(owner=request.user, **validated_data)
 
 
-    def clean_name(self):
-        name = self.cleaned_data["name"].strip()
-        if not name:
-            raise forms.ValidationError("Please enter a name.")
-        return name
+class FileListSerializer(serializers.ModelSerializer):
+    folder_name = serializers.CharField(source="folder.name", read_only=True)
+    owner_username = serializers.CharField(source="owner.username", read_only=True)
+    labels = serializers.StringRelatedField(many=True, read_only=True)
+
+    class Meta:
+        model = FileItem
+        fields = [
+            "id",
+            "name",
+            "folder_name",
+            "owner_username",
+            "mime_type",
+            "size_bytes",
+            "status",
+            "is_starred",
+            "download_count",
+            "labels",
+            "created_at",
+            "updated_at",
+        ]
 
 
-    def clean(self):
-        cleaned_data = super().clean()
-        folder = cleaned_data.get("folder")
+class FileUploadSerializer(serializers.ModelSerializer):
+    folder_id = serializers.PrimaryKeyRelatedField(
+        queryset=Folder.objects.all(),
+        source="folder",
+        required=False,
+        allow_null=True,
+    )
+    labels = serializers.PrimaryKeyRelatedField(
+        queryset=Label.objects.all(),
+        many=True,
+        required=False,
+    )
 
-        if not self.owner:
-            raise ValidationError("Owner is required.")
+    class Meta:
+        model = FileItem
+        fields = ["file", "folder_id", "description", "labels"]
 
-        if not self.instance.pk:
-            raise ValidationError("This form is only for updating an existing file.")
+    def validate_file(self, value):
+        max_size = 20 * 1024 * 1024
+        if value.size > max_size:
+            raise serializers.ValidationError("File vượt quá 20MB.")
 
-        if self.instance.is_deleted:
-            raise ValidationError("Cannot edit metadata of a file in trash.")
-        if self.instance.pk != self.owner:
-            raise ValidationError("You cannot edit a file that does not belong to you.")
-        if folder and folder.owner != self.owner:
-            self.add_error("folder", "Parent folder must belong to the same owner.")
+        allowed_extensions = {
+            ".txt",
+            ".pdf",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".csv",
+            ".xlsx",
+            ".zip",
+        }
+        blocked_extensions = {".exe", ".bat", ".sh"}
+        file_name = value.name.lower()
+
+        for ext in blocked_extensions:
+            if file_name.endswith(ext):
+                raise serializers.ValidationError(
+                    "Định dạng file này không được phép."
+                )
+
+        if not any(file_name.endswith(ext) for ext in allowed_extensions):
+            raise serializers.ValidationError("Định dạng file không hợp lệ.")
+
+        return value
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        owner = request.user if request else None
+        folder = attrs.get("folder")
+
+        if not owner:
+            raise serializers.ValidationError("Authenticated user is required.")
+
+        if not hasattr(owner, "profile"):
+            raise serializers.ValidationError("User profile does not exist.")
+
+        profile = owner.profile
+        if profile.is_suspended:
+            raise serializers.ValidationError("Your account is suspended.")
+
+        upload_file = attrs.get("file")
+        if upload_file and not profile.can_upload(upload_file.size):
+            raise serializers.ValidationError("You do not have enough storage quota.")
+
+        if folder and folder.owner != owner:
+            raise serializers.ValidationError(
+                {"folder_id": "Folder không thuộc quyền sở hữu của bạn."}
+            )
 
         if folder and folder.is_deleted:
-            self.add_error("folder", "Cannot move file into a deleted folder.")
+            raise serializers.ValidationError(
+                {"folder_id": "Không thể upload vào folder đang ở trash."}
+            )
 
-        return cleaned_data
+        return attrs
+
+    def create(self, validated_data):
+        labels = validated_data.pop("labels", [])
+        request = self.context["request"]
+
+        file_item = FileItem.objects.create(
+            owner=request.user,
+            status=FileItem.STATUS_PROCESSING,
+            **validated_data,
+        )
+
+        if labels:
+            file_item.labels.set(labels)
+
+        return file_item
 
 
+class FileUpdateSerializer(serializers.ModelSerializer):
+    folder_id = serializers.PrimaryKeyRelatedField(
+        queryset=Folder.objects.all(),
+        source="folder",
+        required=False,
+        allow_null=True,
+    )
+    labels = serializers.PrimaryKeyRelatedField(
+        queryset=Label.objects.all(),
+        many=True,
+        required=False,
+    )
 
-
-
-class ShareLinkForm(forms.ModelForm):
     class Meta:
-        form = models.ShareLink
-        fields = ['permission','recipient_email','expires_at']
+        model = FileItem
+        fields = ["name", "folder_id", "description", "labels", "is_starred"]
+
+    def validate_name(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("File name cannot be empty.")
+        return value
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        owner = request.user if request else None
+        folder = attrs.get("folder", self.instance.folder if self.instance else None)
+
+        if not owner:
+            raise serializers.ValidationError("Authenticated user is required.")
+
+        if not self.instance:
+            raise serializers.ValidationError(
+                "This serializer is only for updating files."
+            )
+
+        if self.instance.owner != owner:
+            raise serializers.ValidationError(
+                "You cannot edit a file that does not belong to you."
+            )
+
+        if self.instance.is_deleted:
+            raise serializers.ValidationError(
+                "Cannot edit metadata of a file in trash."
+            )
+
+        if folder and folder.owner != owner:
+            raise serializers.ValidationError(
+                {"folder_id": "Folder must belong to the same owner."}
+            )
+
+        if folder and folder.is_deleted:
+            raise serializers.ValidationError(
+                {"folder_id": "Cannot move file into a deleted folder."}
+            )
+
+        return attrs
 
 
-    def __init__(self, *args, file_item = None, created_by = None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.file_item = file_item
-        self.created_by = created_by
+class ShareLinkSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ShareLink
+        fields = ["file", "permission", "recipient_email", "expires_at"]
 
-    def clean_permission(self):
-        cleaned_data = super().clean()
-        expires_at = cleaned_data.get("expires_at")
+    def validate(self, attrs):
+        request = self.context.get("request")
+        owner = request.user if request else None
+        file_item = attrs.get("file")
 
-        if not self.file_item:
-            raise ValidationError("File item is required.")
+        if not owner:
+            raise serializers.ValidationError("Authenticated user is required.")
 
-        if not self.created_by:
-            raise ValidationError("Created by is required.")
+        if not file_item:
+            raise serializers.ValidationError({"file": "File is required."})
 
-        if self.file_item.owner != self.created_by:
-            raise ValidationError("Only the file owner can create a share link.")
+        if file_item.owner != owner:
+            raise serializers.ValidationError(
+                {"file": "You can only share your own file."}
+            )
 
-        if self.file_item.is_deleted:
-            raise ValidationError("Cannot share a file that is in trash.")
+        if file_item.is_deleted:
+            raise serializers.ValidationError(
+                {"file": "Cannot share a file that is in trash."}
+            )
 
-        if self.file_item.status in {
+        if file_item.status in {
             FileItem.STATUS_INFECTED,
             FileItem.STATUS_BLOCKED,
         }:
-            raise ValidationError("Cannot share a file that is infected or blocked.")
+            raise serializers.ValidationError(
+                {"file": "Cannot share a file that is infected or blocked."}
+            )
 
+        expires_at = attrs.get("expires_at")
         if expires_at and expires_at <= timezone.now():
-            self.add_error("expires_at", "Expiration time must be in the future.")
+            raise serializers.ValidationError(
+                {"expires_at": "Expiration time must be in the future."}
+            )
 
-        return cleaned_data
+        return attrs
 
-    def save(self, commit=True):
-        share_link = super().save(commit=False)
-        share_link.file = self.file_item
-        share_link.created_by = self.created_by
+    def create(self, validated_data):
+        request = self.context["request"]
+        return ShareLink.objects.create(created_by=request.user, **validated_data)
 
-        if commit:
-         share_link.save()
 
-        return share_link
+class ActivityLogSerializer(serializers.ModelSerializer):
+    user_username = serializers.CharField(source="user.username", read_only=True)
+    file_name = serializers.CharField(source="file.name", read_only=True)
+    folder_name = serializers.CharField(source="folder.name", read_only=True)
+
+    class Meta:
+        model = ActivityLog
+        fields = [
+            "id",
+            "user_username",
+            "action",
+            "file_name",
+            "folder_name",
+            "detail",
+            "created_at",
+        ]
