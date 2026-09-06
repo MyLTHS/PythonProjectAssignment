@@ -1,0 +1,82 @@
+<h3>Upload file</h3>
+<form id="upload-form" action="{% url 'file-upload' %}" method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    <p>
+        <label for="upload-file">File:</label>
+        <input id="upload-file" type="file" name="file" required>
+    </p>
+    <p>
+        <label for="upload-folder">Folder:</label>
+        <select id="upload-folder" name="folder_id">
+            <option value="">Root</option>
+            {% for folder in upload_folders %}
+                <option value="{{ folder.id }}">{{ folder.name }}</option>
+            {% endfor %}
+        </select>
+    </p>
+    <p>
+        <label for="upload-description">Description:</label>
+        <textarea id="upload-description" name="description"></textarea>
+    </p>
+    <button id="upload-button" type="submit">Upload</button>
+</form>
+<p id="upload-message" aria-live="polite"></p>
+
+<script>
+    const uploadForm = document.getElementById("upload-form");
+    const uploadButton = document.getElementById("upload-button");
+    const uploadMessage = document.getElementById("upload-message");
+
+    uploadForm.addEventListener("submit", async function (event) {
+        event.preventDefault();
+
+        const fileInput = document.getElementById("upload-file");
+        const folderInput = document.getElementById("upload-folder");
+        const selectedFile = fileInput.files[0];
+        const formData = new FormData(uploadForm);
+        const csrfToken = uploadForm.querySelector("[name=csrfmiddlewaretoken]").value;
+
+        uploadButton.disabled = true;
+        uploadMessage.textContent = "Uploading...";
+
+        try {
+            const response = await fetch(uploadForm.action, {
+                method: "POST",
+                headers: {"X-CSRFToken": csrfToken},
+                body: formData,
+            });
+            const result = await response.json();
+
+            if (!response.ok) {
+                const errors = Object.entries(result).flatMap(function ([field, messages]) {
+                    const list = Array.isArray(messages) ? messages : [messages];
+                    return list.map(function (message) {
+                        return field + ": " + message;
+                    });
+                });
+                throw new Error(errors.join(" "));
+            }
+
+            uploadMessage.textContent = result.name + " uploaded successfully.";
+            if (!folderInput.value) {
+                const emptyMessage = document.getElementById("empty-file-message");
+                if (emptyMessage) emptyMessage.remove();
+
+                const item = document.createElement("li");
+                const link = document.createElement("a");
+                link.href = "/files/" + result.id + "/";
+                link.textContent = result.name;
+                item.appendChild(link);
+                document.getElementById("root-file-list").prepend(item);
+            }
+
+            const usedStorage = document.getElementById("used-storage");
+            usedStorage.textContent = Number(usedStorage.textContent) + result.size_bytes;
+            uploadForm.reset();
+        } catch (error) {
+            uploadMessage.textContent = error.message;
+        } finally {
+            uploadButton.disabled = false;
+        }
+    });
+</script>

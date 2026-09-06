@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block title %}Trash{% endblock %}
+
+{% block content %}
+    <h2>Trash</h2>
+    <h3>Folders</h3>
+    <ul>
+        {% for folder in folders %}
+            <li>
+                {{ folder.name }} - deleted {{ folder.deleted_at|timesince }} ago
+                <form class="inline" method="post" action="{% url 'folder-trash-page-action' folder.id 'restore' %}">
+                    {% csrf_token %}<button type="submit">Restore</button>
+                </form>
+                <form class="inline" method="post" action="{% url 'folder-trash-page-action' folder.id 'permanent' %}">
+                    {% csrf_token %}<button type="submit">Delete permanently</button>
+                </form>
+            </li>
+        {% empty %}
+            <li>No deleted folders.</li>
+        {% endfor %}
+    </ul>
+
+    <h3>Files</h3>
+    <ul>
+        {% for file in files %}
+            <li>
+                {{ file.name }} - deleted {{ file.deleted_at|timesince }} ago
+                <form class="inline" method="post" action="{% url 'file-trash-page-action' file.id 'restore' %}">
+                    {% csrf_token %}<button type="submit">Restore</button>
+                </form>
+                <form class="inline" method="post" action="{% url 'file-trash-page-action' file.id 'permanent' %}">
+                    {% csrf_token %}<button type="submit">Delete permanently</button>
+                </form>
+            </li>
+        {% empty %}
+            <li>No deleted files.</li>
+        {% endfor %}
+    </ul>
+{% endblock %}

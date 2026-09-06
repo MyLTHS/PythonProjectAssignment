@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block title %}Starred files{% endblock %}
+
+{% block content %}
+    <h2>Starred files</h2>
+    <ul>
+        {% for file in files %}
+            <li>
+                <a href="{% url 'file-detail-page' file.id %}">{{ file.name }}</a>
+                - {{ file.size_bytes|filesizeformat }}
+            </li>
+        {% empty %}
+            <li>No starred files.</li>
+        {% endfor %}
+    </ul>
+{% endblock %}

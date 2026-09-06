@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block title %}Staff dashboard{% endblock %}
+
+{% block content %}
+    <h2>Staff dashboard</h2>
+    <ul class="stats">
+        <li>Users: {{ total_users }}</li>
+        <li>Active files: {{ total_files }}</li>
+        <li>Storage: {{ total_storage|filesizeformat }}</li>
+        <li>Files in trash: {{ trash_files }}</li>
+        <li>Unsafe files: {{ unsafe_files }}</li>
+        <li>Expired links: {{ expired_links }}</li>
+    </ul>
+
+    <h3>Top storage users</h3>
+    <ul>
+        {% for item in top_users %}
+            <li>{{ item.owner__username }} - {{ item.total_storage|filesizeformat }}</li>
+        {% empty %}
+            <li>No storage data.</li>
+        {% endfor %}
+    </ul>
+
+    <h3>Recent activity</h3>
+    <ul>
+        {% for log in recent_activity %}
+            <li>{{ log.created_at|date:"d/m/Y H:i" }} - {{ log.detail|default:log.action }}</li>
+        {% empty %}
+            <li>No activity yet.</li>
+        {% endfor %}
+    </ul>
+{% endblock %}
