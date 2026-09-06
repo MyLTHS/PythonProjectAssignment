@@ -18,9 +18,8 @@ Người dùng dự kiến có thể:
 - ghi lại lịch sử hoạt động;
 - xử lý các việc lâu như quét file hoặc dọn thùng rác ở chế độ nền.
 
-Ở trạng thái hiện tại, **Dashboard là luồng web duy nhất đã được nối đầy đủ**.
-Models, forms, serializers và permissions đã có nhiều phần, nhưng API upload/chia
-sẻ, AJAX và Celery chưa có URL/view/task để chạy.
+Ở trạng thái hiện tại, Dashboard, REST API, Bearer authentication, AJAX upload và
+Celery background tasks đã được nối. Redis được dùng làm broker cho Celery.
 
 ## 2. Bức tranh tổng thể
 
@@ -63,9 +62,10 @@ xác định người gửi request là ai; permission quyết định người 
 | `drive/serializers.py` | Chuyển đổi và validation dữ liệu dành cho REST API |
 | `drive/authentication.py` | Đổi tiền tố token của DRF từ `Token` thành `Bearer` |
 | `drive/permissions.py` | Quyền trên từng đối tượng file |
-| `drive/views.py` | Hiện chỉ chứa `DashboardView` |
-| `drive/urls.py` | Hiện chỉ ánh xạ `/` tới Dashboard |
-| `drive/admin.py` | Đăng ký 7 model vào Django admin |
+| `drive/views.py` | Dashboard, authentication, folder, file, share và staff API |
+| `drive/urls.py` | URL Dashboard và các endpoint REST API |
+| `drive/tasks.py` | Task scan file, dọn trash, hết hạn link và tính lại dung lượng |
+| `drive/admin.py` | Cấu hình quản trị cho 7 model |
 | `drive/tests.py` | 5 test cho custom manager và Dashboard |
 | `templates/base.html` | Khung HTML dùng chung |
 | `templates/dashboard.html` | Hiển thị dung lượng, tìm kiếm, root folder và root file |
@@ -105,13 +105,8 @@ Nếu chưa có tài khoản quản trị:
 ./.venv/bin/python MiniDrive/manage.py runserver
 ```
 
-Mở `http://127.0.0.1:8000/admin/login/`, đăng nhập, sau đó mở
+Mở `http://127.0.0.1:8000/accounts/login/`, đăng nhập, sau đó mở
 `http://127.0.0.1:8000/` để xem Dashboard.
-
-Dashboard dùng `LoginRequiredMixin`, nhưng dự án chưa khai báo URL
-`/accounts/login/`. Vì thế truy cập `/` khi chưa đăng nhập sẽ chuyển hướng tới một
-URL đăng nhập chưa tồn tại. Đăng nhập qua admin là cách thử tạm thời, không phải luồng
-đăng nhập cuối cùng cần xây.
 
 ## 5. Mô hình dữ liệu
 
@@ -299,7 +294,7 @@ Hiện có:
 - `ShareLinkSerializer`: tạo link hợp lệ cho file của owner.
 - `ActivityLogSerializer`: định dạng log để đọc.
 
-Các serializer này chưa được một API view nào sử dụng.
+Các serializer này được sử dụng bởi các API view trong `drive/views.py`.
 
 ## 9. Authentication và Permission
 
@@ -327,9 +322,8 @@ Object-level permission cần thiết vì “được vào endpoint file” khô
 “được xem mọi file”. DRF chỉ chạy `has_object_permission()` khi view lấy object và
 gọi luồng kiểm tra object permission, thường qua `get_object()`.
 
-Hiện chưa có API view gọi ba permission class này. Cấu hình DRF toàn cục còn dùng
-`AllowAny`, nên endpoint mới phải khai báo permission phù hợp hoặc đổi chính sách mặc
-định.
+Các file view/download gọi object-level permission; những endpoint thay đổi dữ liệu
+khác yêu cầu `IsAuthenticated`, còn staff report dùng `IsAdminUser`.
 
 ## 10. ORM và các khái niệm cần nhớ
 
@@ -426,8 +420,8 @@ Scan virus, gửi email và purge trash nên chạy nền vì có thể chậm h
 vụ ngoài. Nếu worker không chạy, task thường vẫn nằm trong broker và chưa được xử lý;
 web app không nên báo rằng công việc đã hoàn thành.
 
-Celery và broker **chưa được cài đặt hoặc cấu hình trong repository hiện tại**. Đây
-là phần thiết kế cho bước sau, không phải chức năng đang chạy.
+Celery dùng Redis tại `127.0.0.1:6379`. Bốn task hiện có là `scan_uploaded_file`,
+`purge_trash`, `expire_share_links` và `recalculate_user_storage`.
 
 ## 13. AJAX và CSRF
 
@@ -439,8 +433,8 @@ Với Django session authentication, request thay đổi dữ liệu phải gử
 thường qua header `X-CSRFToken`. JavaScript đọc response JSON, duyệt object lỗi theo
 field và đưa từng message vào giao diện.
 
-Repository hiện chưa có JavaScript upload, API upload hay đoạn xử lý CSRF bằng AJAX.
-Vì vậy đây cũng là phần cần làm tiếp, không phải phần đã hoàn thành.
+Dashboard hiện gửi file bằng `fetch()`, `FormData` và header `X-CSRFToken`, sau đó
+hiển thị kết quả mà không tải lại trang.
 
 ## 14. Điều đã chạy và điều chưa được nối
 
@@ -448,59 +442,35 @@ Vì vậy đây cũng là phần cần làm tiếp, không phải phần đã ho
 |---|---|
 | Models và migration ban đầu | Có và database tạo được |
 | Custom QuerySet/Manager | Có, 3 test kiểm tra method tồn tại |
-| Dashboard `/` | Có, 2 test kiểm tra login và phạm vi dữ liệu |
-| Template Dashboard | Có, hiển thị và tìm kiếm cơ bản |
-| Django admin | Có, cấu hình mặc định |
-| Forms | Đã viết nhưng chưa có view/URL/template sử dụng |
-| Serializers | Đã viết nhưng chưa có API view/URL sử dụng |
-| Token authentication | Đã cấu hình nhưng chưa có endpoint cấp token trong URL |
-| Object permissions | Đã viết nhưng chưa được API view sử dụng |
-| Upload/chỉnh sửa/xóa/khôi phục/chia sẻ qua UI | Chưa nối |
-| AJAX | Chưa có |
-| Celery/background task | Chưa cài đặt hoặc cấu hình |
+| Dashboard `/` | Có đăng nhập, tìm kiếm và AJAX upload |
+| Django admin | Có list display, filter, search, readonly và action |
+| Forms | Đã viết cho validation HTML |
+| Serializers và API | Đã nối folder, file, trash, share, log và staff report |
+| Authentication | Session cho web, Bearer token cho API |
+| Object permissions | Đã dùng cho xem và download file |
+| Celery/background task | Có 4 task và lịch Celery beat |
 
 ## 15. Các điểm cần cẩn thận khi làm tiếp
 
-1. `Profile` chưa được tạo tự động khi tạo `User`. Upload serializer sẽ báo lỗi nếu
-   user không có profile.
-2. `used_storage_bytes` chưa tự đồng bộ với file thật.
-3. Folder chưa có database `UniqueConstraint`; validation bằng query vẫn có thể gặp
-   race condition khi hai request tạo cùng lúc.
-4. Cây folder chưa chặn chu trình nhiều cấp.
-5. `FileShare.clean()` có thể bị bỏ qua do `save()` không gọi `full_clean()`.
-6. Share token nằm trong query string có thể xuất hiện trong lịch sử trình duyệt và
+1. Share token nằm trong query string có thể xuất hiện trong lịch sử trình duyệt và
    access log. Cần cân nhắc rủi ro khi triển khai thật.
-7. `IsOwnerOrStaff` giả định object có thuộc tính `owner`; không dùng trực tiếp cho
+2. `IsOwnerOrStaff` giả định object có thuộc tính `owner`; không dùng trực tiếp cho
    model chỉ có `created_by` hoặc `shared_by`.
-8. `SECRET_KEY`, `DEBUG=True`, SQLite và `ALLOWED_HOSTS=[]` chỉ phù hợp lúc học/phát
+3. `SECRET_KEY`, `DEBUG=True`, SQLite và `ALLOWED_HOSTS=[]` chỉ phù hợp lúc học/phát
    triển, không phải cấu hình production.
-9. Cấu hình email đang dùng tên `MAILERS`, trong khi Django thông thường đọc
-   `EMAIL_BACKEND`; cần sửa khi triển khai gửi email.
-10. Validation đang lặp ở model, form và serializer. Hãy xác định quy tắc domain nào
+4. Validation đang lặp ở model, form và serializer. Hãy xác định quy tắc domain nào
     bắt buộc ở model và quy tắc trình bày nào thuộc form/API.
 
-## 16. Lộ trình làm bài đề xuất
+## 16. Các luồng đã hoàn thiện
 
-Làm theo từng lát cắt có thể chạy và test được:
-
-1. **Hoàn thiện đăng nhập web:** thêm URL/template login và logout; test redirect.
-2. **Bảo đảm Profile tồn tại:** tạo cùng user hoặc dùng signal có test rõ ràng.
-3. **Nối FolderForm:** list, create, update và soft-delete folder theo owner.
-4. **Nối upload file:** API hoặc form tạo `FileItem`, cập nhật quota trong transaction,
-   rồi test file quá 20 MB, sai extension và folder của người khác.
-5. **Nối chỉnh sửa và trash:** dùng `FileMetadataForm`/serializer, restore và purge;
-   test `deleted_at` và dung lượng.
-6. **Nối chia sẻ:** endpoint tạo link, xem và download; áp permission object-level;
-   tăng `download_count` bằng `F()`.
-7. **Thêm AJAX:** upload và hiển thị lỗi server trên Dashboard.
-8. **Thêm Celery:** scan, email, expire link và purge trash; test enqueue riêng với
-   logic task.
-9. **Tùy chỉnh admin:** cột, filter, readonly và admin actions.
-10. **Tối ưu query:** đo số truy vấn rồi thêm `select_related()` và
-    `prefetch_related()` đúng chỗ.
-
-Sau mỗi bước, viết test trước cho hành vi mong muốn, chạy toàn bộ test, rồi mới chuyển
-sang bước tiếp theo.
+1. Đăng nhập web và Bearer token API.
+2. Folder API với create, update, soft-delete và restore.
+3. File API với upload, tìm kiếm, update, trash và restore.
+4. Share link, object permission, xem và download file.
+5. Activity log và staff report.
+6. AJAX upload bằng `FormData` và CSRF.
+7. Celery scan, purge trash, expire link và tính lại dung lượng.
+8. Admin có cột, filter, search, readonly và action.
 
 ## 17. Cách học để thật sự nhớ
 

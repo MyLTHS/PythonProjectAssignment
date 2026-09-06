@@ -13,7 +13,7 @@ from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import ActivityLog, FileItem, Folder, ShareLink
+from .models import ActivityLog, FileItem, Folder, Profile, ShareLink
 from .permissions import CanDownloadFile, CanViewFile
 from .serializers import (
     ActivityLogSerializer,
@@ -23,6 +23,7 @@ from .serializers import (
     FolderSerializer,
     ShareLinkSerializer,
 )
+from .tasks import scan_uploaded_file
 
 
 class LoginAPIView(APIView):
@@ -47,6 +48,7 @@ class LoginAPIView(APIView):
             )
 
         token, _ = Token.objects.get_or_create(user=user)
+        Profile.objects.get_or_create(user=user)
 
         return Response(
             {
@@ -126,6 +128,10 @@ class DashboardView(LoginRequiredMixin, TemplateView):
         owner = self.request.user
 
         root_folders = Folder.objects.roots().filter(owner=owner)
+        upload_folders = Folder.objects.filter(
+            owner=owner,
+            is_deleted=False,
+        ).order_by("name")
         root_files = FileItem.objects.active().filter(owner=owner, folder__isnull=True)
         active_files = FileItem.objects.active().filter(owner=owner)
 
@@ -141,6 +147,7 @@ class DashboardView(LoginRequiredMixin, TemplateView):
             {
                 "keyword": keyword,
                 "root_folders": root_folders,
+                "upload_folders": upload_folders,
                 "root_files": root_files,
                 "storage_used_bytes": storage_used_bytes,
                 "storage_quota_bytes": (
@@ -243,6 +250,10 @@ class FileUploadAPIView(generics.CreateAPIView):
                 file=file_item,
                 folder=file_item.folder,
                 detail=f"Uploaded {file_item.name}",
+            )
+
+            transaction.on_commit(
+                lambda: scan_uploaded_file.delay(file_item.id)
             )
 
 
@@ -375,8 +386,7 @@ class ShareLinkDestroyAPIView(generics.DestroyAPIView):
         return ShareLink.objects.filter(created_by=self.request.user)
 
     def perform_destroy(self, instance):
-        instance.is_active = False
-        instance.save(update_fields=["is_active"])
+        ShareLink.objects.filter(pk=instance.pk).update(is_active=False)
 
 
 class SharedFileViewAPIView(generics.RetrieveAPIView):

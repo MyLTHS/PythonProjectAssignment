@@ -1,13 +1,58 @@
 # MiniDrive
 
-MiniDrive là bài tập Django mô phỏng một dịch vụ lưu trữ file nhỏ. Dự án hiện có
-domain model, form, serializer, permission và Dashboard cơ bản; một số phần như API,
-AJAX và Celery mới là nội dung cần tiếp tục hoàn thiện.
+MiniDrive là bài tập Django mô phỏng một dịch vụ lưu trữ file nhỏ. Dự án có
+Dashboard, REST API, Bearer authentication, phân quyền chia sẻ, AJAX upload và các
+background task chạy bằng Celery + Redis.
 
 ## Tài liệu học dự án
 
 - [Sổ tay MiniDrive](docs/SO_TAY_DU_AN.md): bản đồ toàn bộ dự án, luồng request,
   giải thích từng file, câu hỏi ôn tập và lộ trình làm tiếp.
+
+## Cài đặt và chạy
+
+Từ thư mục gốc repository:
+
+```bash
+uv sync
+cd MiniDrive
+../.venv/bin/python manage.py migrate
+../.venv/bin/python manage.py createsuperuser
+../.venv/bin/python manage.py runserver
+```
+
+Mở `http://127.0.0.1:8000/accounts/login/` để đăng nhập Dashboard. AJAX upload trên
+Dashboard sử dụng session và CSRF token.
+
+Chạy Redis, Celery worker và Celery beat ở hai terminal khác:
+
+```bash
+brew services start redis
+../.venv/bin/celery -A MiniDrive worker --pool=solo --loglevel=info
+../.venv/bin/celery -A MiniDrive beat --loglevel=info
+```
+
+## Authentication API
+
+Lấy Bearer token:
+
+```http
+POST /api/auth/login/
+Content-Type: application/json
+
+{"username": "admin", "password": "your-password"}
+```
+
+Gửi token khi gọi API:
+
+```http
+Authorization: Bearer <token>
+```
+
+Các nhóm API chính nằm dưới `/api/folders/`, `/api/files/`, `/api/share-links/`,
+`/api/activity-logs/` và `/api/staff/`.
+
+## Kiểm tra
 
 Chạy kiểm tra từ thư mục gốc của repository:
 

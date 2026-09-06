@@ -26,8 +26,8 @@ class DashboardViewTests(TestCase):
         self.other_user = User.objects.create_user(
             username="other", password="secret123"
         )
-        Profile.objects.create(user=self.user)
-        Profile.objects.create(user=self.other_user)
+        Profile.objects.get_or_create(user=self.user)
+        Profile.objects.get_or_create(user=self.other_user)
 
     def test_dashboard_requires_login(self):
         response = self.client.get("/")
@@ -79,7 +79,7 @@ class DashboardViewTests(TestCase):
         self.assertContains(response, "Root Work")
         self.assertContains(response, "report.pdf")
         self.assertNotContains(response, "Deleted Root")
-        self.assertNotContains(response, "Child Folder")
+        self.assertNotIn(child_folder, response.context["root_folders"])
         self.assertNotContains(response, "nested.txt")
         self.assertNotContains(response, "trash.txt")
         self.assertNotContains(response, "other.txt")

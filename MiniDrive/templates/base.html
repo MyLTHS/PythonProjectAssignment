@@ -10,6 +10,10 @@
         <h1>MiniDrive</h1>
         {% if request.user.is_authenticated %}
             <p>Welcome, {{ request.user.username }}</p>
+            <form method="post" action="{% url 'logout' %}">
+                {% csrf_token %}
+                <button type="submit">Log out</button>
+            </form>
         {% endif %}
     </header>
 

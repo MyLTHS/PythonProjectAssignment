@@ -90,6 +90,20 @@ class Folder(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["owner", "name"],
+                condition=models.Q(parent__isnull=True),
+                name="unique_root_folder_name_per_owner",
+            ),
+            models.UniqueConstraint(
+                fields=["owner", "parent", "name"],
+                condition=models.Q(parent__isnull=False),
+                name="unique_child_folder_name_per_owner",
+            ),
+        ]
+
     def __str__(self):
         return self.name
 
@@ -97,8 +111,15 @@ class Folder(models.Model):
         if not self.name.strip():
             raise ValidationError({"name": "Folder name cannot be empty."})
 
-        if self.parent and self.parent == self:
-            raise ValidationError({"parent": "A folder cannot be its own parent."})
+        ancestor = self.parent
+        visited_ids = set()
+        while ancestor:
+            if ancestor == self or ancestor.pk in visited_ids:
+                raise ValidationError(
+                    {"parent": "A folder cannot be inside itself."}
+                )
+            visited_ids.add(ancestor.pk)
+            ancestor = ancestor.parent
 
         if self.parent and self.parent.owner != self.owner:
             raise ValidationError(
@@ -482,3 +503,7 @@ class FileShare(models.Model):
             raise ValidationError(
                 {"shared_with": "shared_with must be different from shared_by."}
             )
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
