@@ -1,6 +1,7 @@
 from django.urls import path
 
 from .views import (
+    ActivityLogListAPIView,
     DashboardView,
     FileDetailAPIView,
     FileDownloadAPIView,
@@ -15,6 +16,8 @@ from .views import (
     SharedFileViewAPIView,
     ShareLinkDestroyAPIView,
     ShareLinkListCreateAPIView,
+    StaffActivityLogListAPIView,
+    StaffReportAPIView,
     TrashListAPIView,
 )
 
@@ -23,6 +26,21 @@ urlpatterns = [
     path("", DashboardView.as_view(), name="dashboard"),
     path("api/auth/login/", LoginAPIView.as_view(), name="api-login"),
     path("api/auth/logout/", LogoutAPIView.as_view(), name="api-logout"),
+    path(
+        "api/activity-logs/",
+        ActivityLogListAPIView.as_view(),
+        name="activity-log-list",
+    ),
+    path(
+        "api/staff/activity-logs/",
+        StaffActivityLogListAPIView.as_view(),
+        name="staff-activity-log-list",
+    ),
+    path(
+        "api/staff/reports/",
+        StaffReportAPIView.as_view(),
+        name="staff-reports",
+    ),
     path(
         "api/folders/",
         FolderListCreateAPIView.as_view(),

@@ -9,13 +9,14 @@ from django.views.generic import TemplateView
 from rest_framework import generics, status
 from rest_framework.authtoken.models import Token
 from rest_framework.parsers import FormParser, MultiPartParser
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import ActivityLog, FileItem, Folder, ShareLink
 from .permissions import CanDownloadFile, CanViewFile
 from .serializers import (
+    ActivityLogSerializer,
     FileListSerializer,
     FileUpdateSerializer,
     FileUploadSerializer,
@@ -66,6 +67,54 @@ class LogoutAPIView(APIView):
     def post(self, request):
         request.auth.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ActivityLogListAPIView(generics.ListAPIView):
+    serializer_class = ActivityLogSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return (
+            ActivityLog.objects.filter(user=self.request.user)
+            .select_related("user", "file", "folder")
+            .order_by("-created_at")
+        )
+
+
+class StaffActivityLogListAPIView(generics.ListAPIView):
+    serializer_class = ActivityLogSerializer
+    permission_classes = [IsAdminUser]
+
+    def get_queryset(self):
+        return (
+            ActivityLog.objects.select_related("user", "file", "folder")
+            .all()
+            .order_by("-created_at")
+        )
+
+
+class StaffReportAPIView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        storage_by_user = list(FileItem.objects.storage_summary_by_user())
+        file_types = list(FileItem.objects.file_type_summary())
+        top_labels = [
+            {
+                "id": label.id,
+                "name": label.name,
+                "file_count": label.file_count,
+            }
+            for label in FileItem.objects.top_labels()
+        ]
+
+        return Response(
+            {
+                "storage_by_user": storage_by_user,
+                "file_types": file_types,
+                "top_labels": top_labels,
+            }
+        )
 
 
 class DashboardView(LoginRequiredMixin, TemplateView):
