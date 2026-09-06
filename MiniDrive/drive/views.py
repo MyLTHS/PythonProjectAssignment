@@ -10,6 +10,7 @@ from django.views import View
 from django.views.generic import TemplateView
 from rest_framework import generics, status
 from rest_framework.authtoken.models import Token
+from rest_framework.exceptions import ValidationError
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
@@ -17,7 +18,7 @@ from rest_framework.views import APIView
 
 from .forms import FileMetadataForm, FolderForm, ShareLinkForm
 from .models import ActivityLog, FileItem, Folder, Profile, ShareLink
-from .permissions import CanDownloadFile, CanViewFile
+from .permissions import CanDownloadFile, CanViewFile, IsOwnerOrStaff
 from .serializers import (
     ActivityLogSerializer,
     FileListSerializer,
@@ -82,7 +83,10 @@ class LogoutAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        request.auth.delete()
+        if request.auth:
+            request.auth.delete()
+        else:
+            Token.objects.filter(user=request.user).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -151,6 +155,43 @@ class StaffReportAPIView(APIView):
         )
 
 
+class StaffStorageStatsAPIView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        active_files = FileItem.objects.active()
+        return Response(
+            {
+                "total_users": User.objects.count(),
+                "total_files": active_files.count(),
+                "total_storage": active_files.aggregate(total=Sum("size_bytes"))["total"]
+                or 0,
+                "storage_by_user": list(FileItem.objects.storage_summary_by_user()),
+            }
+        )
+
+
+class StaffFileSummaryAPIView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        top_labels = [
+            {"id": label.id, "name": label.name, "file_count": label.file_count}
+            for label in FileItem.objects.top_labels()
+        ]
+        return Response(
+            {
+                "file_types": list(FileItem.objects.file_type_summary()),
+                "trash_files": FileItem.objects.trash().count(),
+                "unsafe_files": FileItem.objects.filter(
+                    status__in=[FileItem.STATUS_INFECTED, FileItem.STATUS_BLOCKED]
+                ).count(),
+                "expired_share_links": ShareLink.objects.expired().count(),
+                "top_labels": top_labels,
+            }
+        )
+
+
 class DashboardView(LoginRequiredMixin, TemplateView):
     template_name = "dashboard.html"
 
@@ -164,11 +205,11 @@ class DashboardView(LoginRequiredMixin, TemplateView):
             owner=owner,
             is_deleted=False,
         ).order_by("name")
-        root_files = FileItem.objects.active().filter(owner=owner, folder__isnull=True)
         active_files = FileItem.objects.active().filter(owner=owner)
+        root_files = active_files.filter(folder__isnull=True)
 
         if keyword:
-            root_files = root_files.search(keyword)
+            root_files = active_files.search(keyword)
             root_folders = root_folders.filter(name__icontains=keyword)
 
         storage_used_bytes = (
@@ -231,12 +272,26 @@ class FolderDetailPageView(LoginRequiredMixin, TemplateView):
                 .owned_by(self.request.user)
                 .prefetch_related("labels"),
                 "folder_form": FolderForm(owner=self.request.user, initial={"parent": folder}),
+                "folder_edit_form": FolderForm(
+                    instance=folder,
+                    owner=self.request.user,
+                ),
             }
         )
         return context
 
     def post(self, request, *args, **kwargs):
         folder = self.get_folder()
+        if request.POST.get("action") == "edit":
+            form = FolderForm(request.POST, instance=folder, owner=request.user)
+            if form.is_valid():
+                form.save()
+                return redirect("folder-detail-page", pk=folder.pk)
+
+            context = self.get_context_data(**kwargs)
+            context["folder_edit_form"] = form
+            return self.render_to_response(context)
+
         data = request.POST.copy()
         data["parent"] = folder.pk
         form = FolderForm(data, owner=request.user)
@@ -293,14 +348,30 @@ class FileDetailPageView(LoginRequiredMixin, TemplateView):
                 share_link.file = file_item
                 share_link.created_by = request.user
                 share_link.save()
+                ActivityLog.objects.create(
+                    user=request.user,
+                    action=ActivityLog.ACTION_SHARE,
+                    file=file_item,
+                    folder=file_item.folder,
+                    detail=f"Created share link for {file_item.name}",
+                )
                 return redirect("shared-links-page")
             context = self.get_context_data(**kwargs)
             context["share_form"] = form
             return self.render_to_response(context)
 
+        old_folder_id = file_item.folder_id
         form = FileMetadataForm(request.POST, instance=file_item, owner=request.user)
         if form.is_valid():
-            form.save()
+            updated_file = form.save()
+            if updated_file.folder_id != old_folder_id:
+                ActivityLog.objects.create(
+                    user=request.user,
+                    action=ActivityLog.ACTION_MOVE,
+                    file=updated_file,
+                    folder=updated_file.folder,
+                    detail=f"Moved {updated_file.name}",
+                )
             return redirect("file-detail-page", pk=file_item.pk)
         context = self.get_context_data(**kwargs)
         context["metadata_form"] = form
@@ -378,16 +449,32 @@ class FileTrashPageActionView(LoginRequiredMixin, View):
                 0, profile.used_storage_bytes - file_item.size_bytes
             )
             profile.save(update_fields=["used_storage_bytes"])
+            ActivityLog.objects.create(
+                user=request.user,
+                action=ActivityLog.ACTION_DELETE,
+                file=file_item,
+                folder=file_item.folder,
+                detail=f"Moved {file_item.name} to trash",
+            )
         elif action == "restore":
             file_item = get_object_or_404(
                 FileItem.objects.trash(), pk=pk, owner=request.user
             )
+            if file_item.folder and file_item.folder.is_deleted:
+                return redirect("trash-page")
             profile, _ = Profile.objects.get_or_create(user=request.user)
             if profile.can_upload(file_item.size_bytes):
                 file_item.is_deleted = False
                 file_item.save()
                 profile.used_storage_bytes += file_item.size_bytes
                 profile.save(update_fields=["used_storage_bytes"])
+                ActivityLog.objects.create(
+                    user=request.user,
+                    action=ActivityLog.ACTION_RESTORE,
+                    file=file_item,
+                    folder=file_item.folder,
+                    detail=f"Restored {file_item.name}",
+                )
         elif action == "permanent":
             file_item = get_object_or_404(
                 FileItem.objects.trash(), pk=pk, owner=request.user
@@ -398,6 +485,24 @@ class FileTrashPageActionView(LoginRequiredMixin, View):
         return redirect("trash-page")
 
 
+class FileStarPageActionView(LoginRequiredMixin, View):
+    def post(self, request, pk, action):
+        file_item = get_object_or_404(
+            FileItem.objects.active(), pk=pk, owner=request.user
+        )
+        if action == "star":
+            file_item.is_starred = True
+        elif action == "unstar":
+            file_item.is_starred = False
+        else:
+            return redirect("file-detail-page", pk=file_item.pk)
+
+        file_item.save(update_fields=["is_starred", "updated_at"])
+        if request.POST.get("next") == "starred":
+            return redirect("starred-page")
+        return redirect("file-detail-page", pk=file_item.pk)
+
+
 class FolderTrashPageActionView(LoginRequiredMixin, View):
     def post(self, request, pk, action):
         folder = get_object_or_404(Folder, pk=pk, owner=request.user)
@@ -405,7 +510,10 @@ class FolderTrashPageActionView(LoginRequiredMixin, View):
 
         if action == "delete" and not folder.is_deleted:
             deleted_at = timezone.now()
-            files = FileItem.objects.active().filter(folder_id__in=folder_ids)
+            files = FileItem.objects.filter(
+                folder_id__in=folder_ids,
+                is_deleted=False,
+            )
             removed_size = files.aggregate(total=Sum("size_bytes"))["total"] or 0
             Folder.objects.filter(id__in=folder_ids).update(
                 is_deleted=True, deleted_at=deleted_at
@@ -416,7 +524,17 @@ class FolderTrashPageActionView(LoginRequiredMixin, View):
                 0, profile.used_storage_bytes - removed_size
             )
             profile.save(update_fields=["used_storage_bytes"])
-        elif action == "restore" and folder.is_deleted:
+            ActivityLog.objects.create(
+                user=request.user,
+                action=ActivityLog.ACTION_DELETE,
+                folder=folder,
+                detail=f"Moved folder {folder.name} to trash",
+            )
+        elif (
+            action == "restore"
+            and folder.is_deleted
+            and (folder.parent is None or not folder.parent.is_deleted)
+        ):
             files = FileItem.objects.filter(folder_id__in=folder_ids, is_deleted=True)
             restore_size = files.aggregate(total=Sum("size_bytes"))["total"] or 0
             profile, _ = Profile.objects.get_or_create(user=request.user)
@@ -427,6 +545,12 @@ class FolderTrashPageActionView(LoginRequiredMixin, View):
                 files.update(is_deleted=False, deleted_at=None)
                 profile.used_storage_bytes += restore_size
                 profile.save(update_fields=["used_storage_bytes"])
+                ActivityLog.objects.create(
+                    user=request.user,
+                    action=ActivityLog.ACTION_RESTORE,
+                    folder=folder,
+                    detail=f"Restored folder {folder.name}",
+                )
         elif action == "permanent" and folder.is_deleted:
             for file_item in FileItem.objects.filter(folder_id__in=folder_ids):
                 if file_item.file:
@@ -454,18 +578,21 @@ class FolderListCreateAPIView(generics.ListCreateAPIView):
 
 class FolderDetailAPIView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = FolderSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsOwnerOrStaff]
 
     def get_queryset(self):
-        return Folder.objects.filter(
-            owner=self.request.user,
-            is_deleted=False,
-        )
+        queryset = Folder.objects.active()
+        if self.request.user.is_staff:
+            return queryset
+        return queryset.filter(owner=self.request.user)
 
     def perform_destroy(self, instance):
         folder_ids = folder_tree_ids(instance)
         deleted_at = timezone.now()
-        files = FileItem.objects.active().filter(folder_id__in=folder_ids)
+        files = FileItem.objects.filter(
+            folder_id__in=folder_ids,
+            is_deleted=False,
+        )
         removed_size = files.aggregate(total=Sum("size_bytes"))["total"] or 0
 
         with transaction.atomic():
@@ -474,7 +601,7 @@ class FolderDetailAPIView(generics.RetrieveUpdateDestroyAPIView):
                 deleted_at=deleted_at,
             )
             files.update(is_deleted=True, deleted_at=deleted_at)
-            profile, _ = Profile.objects.get_or_create(user=self.request.user)
+            profile, _ = Profile.objects.get_or_create(user=instance.owner)
             profile.used_storage_bytes = max(0, profile.used_storage_bytes - removed_size)
             profile.save(update_fields=["used_storage_bytes"])
             ActivityLog.objects.create(
@@ -563,9 +690,16 @@ class FileListAPIView(generics.ListAPIView):
         min_bytes = self.request.query_params.get("min_bytes")
         max_bytes = self.request.query_params.get("max_bytes")
         if min_bytes or max_bytes:
+            try:
+                min_value = int(min_bytes) if min_bytes else None
+                max_value = int(max_bytes) if max_bytes else None
+            except ValueError:
+                raise ValidationError(
+                    {"min_bytes": "min_bytes and max_bytes must be integers."}
+                )
             queryset = queryset.size_between(
-                int(min_bytes) if min_bytes else None,
-                int(max_bytes) if max_bytes else None,
+                min_value,
+                max_value,
             )
 
         return queryset
@@ -598,27 +732,41 @@ class FileUploadAPIView(generics.CreateAPIView):
 
 
 class FileDetailAPIView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsOwnerOrStaff]
 
     def get_queryset(self):
-        return (
+        queryset = (
             FileItem.objects.active()
-            .filter(owner=self.request.user)
             .select_related("owner", "folder")
             .prefetch_related("labels")
         )
+        if self.request.user.is_staff:
+            return queryset
+        return queryset.filter(owner=self.request.user)
 
     def get_serializer_class(self):
         if self.request.method in {"PUT", "PATCH"}:
             return FileUpdateSerializer
         return FileListSerializer
 
+    def perform_update(self, serializer):
+        old_folder_id = serializer.instance.folder_id
+        file_item = serializer.save()
+        if file_item.folder_id != old_folder_id:
+            ActivityLog.objects.create(
+                user=self.request.user,
+                action=ActivityLog.ACTION_MOVE,
+                file=file_item,
+                folder=file_item.folder,
+                detail=f"Moved {file_item.name}",
+            )
+
     def perform_destroy(self, instance):
         with transaction.atomic():
             instance.is_deleted = True
             instance.save()
 
-            profile = self.request.user.profile
+            profile = instance.owner.profile
             profile.used_storage_bytes = max(
                 0,
                 profile.used_storage_bytes - instance.size_bytes,
@@ -645,6 +793,16 @@ class TrashListAPIView(generics.ListAPIView):
             .select_related("owner", "folder")
             .prefetch_related("labels")
             .order_by("-deleted_at")
+        )
+
+
+class TrashFolderListAPIView(generics.ListAPIView):
+    serializer_class = FolderSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Folder.objects.trash().filter(owner=self.request.user).order_by(
+            "-deleted_at"
         )
 
 
@@ -767,6 +925,34 @@ class ShareLinkListCreateAPIView(generics.ListCreateAPIView):
                 folder=share_link.file.folder,
                 detail=f"Created share link for {share_link.file.name}",
             )
+
+
+class FileShareLinkCreateAPIView(generics.CreateAPIView):
+    serializer_class = ShareLinkSerializer
+    permission_classes = [IsAuthenticated]
+
+    def create(self, request, *args, **kwargs):
+        file_item = get_object_or_404(
+            FileItem.objects.active(),
+            pk=kwargs["pk"],
+            owner=request.user,
+        )
+        data = request.data.copy()
+        data["file"] = file_item.pk
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        share_link = serializer.save()
+        ActivityLog.objects.create(
+            user=request.user,
+            action=ActivityLog.ACTION_SHARE,
+            file=file_item,
+            folder=file_item.folder,
+            detail=f"Created share link for {file_item.name}",
+        )
+        return Response(
+            self.get_serializer(share_link).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class ShareLinkDestroyAPIView(generics.DestroyAPIView):

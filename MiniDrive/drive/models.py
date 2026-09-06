@@ -361,7 +361,11 @@ class ShareLinkQuerySet(models.QuerySet):
         )
 
     def expired(self):
-        return self.filter(expires_at__isnull=False, expires_at__lte=timezone.now())
+        return self.filter(
+            is_active=True,
+            expires_at__isnull=False,
+            expires_at__lte=timezone.now(),
+        )
 
 
 class ShareLink(models.Model):

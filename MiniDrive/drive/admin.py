@@ -1,8 +1,34 @@
 from django.contrib import admin
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.utils import timezone
 
 from .models import Profile, Label, Folder, FileItem, ShareLink, ActivityLog, FileShare
+
+
+def get_folder_tree_ids(queryset):
+    folder_ids = list(queryset.values_list("id", flat=True))
+    all_ids = set(folder_ids)
+    pending_ids = folder_ids
+    while pending_ids:
+        pending_ids = list(
+            Folder.objects.filter(parent_id__in=pending_ids).values_list(
+                "id", flat=True
+            )
+        )
+        all_ids.update(pending_ids)
+    return all_ids
+
+
+def recalculate_storage_for_users(user_ids):
+    profiles = list(Profile.objects.filter(user_id__in=user_ids))
+    for profile in profiles:
+        profile.used_storage_bytes = (
+            FileItem.objects.active()
+            .filter(owner_id=profile.user_id)
+            .aggregate(total=Sum("size_bytes"))["total"]
+            or 0
+        )
+    Profile.objects.bulk_update(profiles, ["used_storage_bytes"])
 
 
 @admin.register(Profile)
@@ -41,11 +67,33 @@ class FolderAdmin(admin.ModelAdmin):
 
     @admin.action(description="Move selected folders to trash")
     def soft_delete_folders(self, request, queryset):
-        queryset.update(is_deleted=True, deleted_at=timezone.now())
+        user_ids = list(queryset.values_list("owner_id", flat=True).distinct())
+        folder_ids = get_folder_tree_ids(queryset)
+        deleted_at = timezone.now()
+        files = FileItem.objects.filter(folder_id__in=folder_ids, is_deleted=False)
+        Folder.objects.filter(id__in=folder_ids).update(
+            is_deleted=True, deleted_at=deleted_at
+        )
+        files.update(is_deleted=True, deleted_at=deleted_at)
+        recalculate_storage_for_users(user_ids)
 
     @admin.action(description="Restore selected folders")
     def restore_folders(self, request, queryset):
-        queryset.update(is_deleted=False, deleted_at=None)
+        restorable_ids = [
+            folder.id
+            for folder in queryset.select_related("parent")
+            if folder.parent is None or not folder.parent.is_deleted
+        ]
+        folders = Folder.objects.filter(id__in=restorable_ids)
+        user_ids = list(folders.values_list("owner_id", flat=True).distinct())
+        folder_ids = get_folder_tree_ids(folders)
+        Folder.objects.filter(id__in=folder_ids).update(
+            is_deleted=False, deleted_at=None
+        )
+        FileItem.objects.filter(folder_id__in=folder_ids, is_deleted=True).update(
+            is_deleted=False, deleted_at=None
+        )
+        recalculate_storage_for_users(user_ids)
 
     actions = ("soft_delete_folders", "restore_folders")
 
@@ -68,11 +116,18 @@ class FileItemAdmin(admin.ModelAdmin):
 
     @admin.action(description="Move selected files to trash")
     def soft_delete_files(self, request, queryset):
+        user_ids = list(queryset.values_list("owner_id", flat=True).distinct())
         queryset.update(is_deleted=True, deleted_at=timezone.now())
+        recalculate_storage_for_users(user_ids)
 
     @admin.action(description="Restore selected files")
     def restore_files(self, request, queryset):
+        queryset = queryset.filter(
+            Q(folder__isnull=True) | Q(folder__is_deleted=False)
+        )
+        user_ids = list(queryset.values_list("owner_id", flat=True).distinct())
         queryset.update(is_deleted=False, deleted_at=None)
+        recalculate_storage_for_users(user_ids)
 
     @admin.action(description="Mark selected files as blocked")
     def mark_blocked(self, request, queryset):

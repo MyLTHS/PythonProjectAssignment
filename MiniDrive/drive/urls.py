@@ -9,7 +9,9 @@ from .views import (
     FileListAPIView,
     FilePermanentDeleteAPIView,
     FileRestoreAPIView,
+    FileShareLinkCreateAPIView,
     FileStarAPIView,
+    FileStarPageActionView,
     FileTrashPageActionView,
     FileUnstarAPIView,
     FileUploadAPIView,
@@ -28,10 +30,13 @@ from .views import (
     ShareLinkRevokePageView,
     StaffDashboardPageView,
     StaffActivityLogListAPIView,
+    StaffFileSummaryAPIView,
     StaffReportAPIView,
+    StaffStorageStatsAPIView,
     StarredPageView,
     TrashPageView,
     TrashListAPIView,
+    TrashFolderListAPIView,
 )
 
 
@@ -47,6 +52,11 @@ urlpatterns = [
         "files/<int:pk>/trash/<str:action>/",
         FileTrashPageActionView.as_view(),
         name="file-trash-page-action",
+    ),
+    path(
+        "files/<int:pk>/star/<str:action>/",
+        FileStarPageActionView.as_view(),
+        name="file-star-page-action",
     ),
     path(
         "folders/<int:pk>/trash/<str:action>/",
@@ -74,6 +84,16 @@ urlpatterns = [
         "api/staff/reports/",
         StaffReportAPIView.as_view(),
         name="staff-reports",
+    ),
+    path(
+        "api/staff/storage-stats/",
+        StaffStorageStatsAPIView.as_view(),
+        name="staff-storage-stats",
+    ),
+    path(
+        "api/staff/file-summary/",
+        StaffFileSummaryAPIView.as_view(),
+        name="staff-file-summary",
     ),
     path(
         "api/folders/",
@@ -115,6 +135,37 @@ urlpatterns = [
         name="file-permanent-delete",
     ),
     path("api/trash/", TrashListAPIView.as_view(), name="trash-list"),
+    path("api/trash/files/", TrashListAPIView.as_view(), name="trash-file-list"),
+    path(
+        "api/trash/folders/",
+        TrashFolderListAPIView.as_view(),
+        name="trash-folder-list",
+    ),
+    path(
+        "api/trash/files/<int:pk>/restore/",
+        FileRestoreAPIView.as_view(),
+        name="trash-file-restore",
+    ),
+    path(
+        "api/trash/folders/<int:pk>/restore/",
+        FolderRestoreAPIView.as_view(),
+        name="trash-folder-restore",
+    ),
+    path(
+        "api/trash/files/<int:pk>/permanent/",
+        FilePermanentDeleteAPIView.as_view(),
+        name="trash-file-permanent-delete",
+    ),
+    path(
+        "api/trash/folders/<int:pk>/permanent/",
+        FolderPermanentDeleteAPIView.as_view(),
+        name="trash-folder-permanent-delete",
+    ),
+    path(
+        "api/files/<int:pk>/share-links/",
+        FileShareLinkCreateAPIView.as_view(),
+        name="file-share-link-create",
+    ),
     path(
         "api/share-links/",
         ShareLinkListCreateAPIView.as_view(),

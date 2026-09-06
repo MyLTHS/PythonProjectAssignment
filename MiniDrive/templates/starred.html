@@ -9,6 +9,11 @@
             <li>
                 <a href="{% url 'file-detail-page' file.id %}">{{ file.name }}</a>
                 - {{ file.size_bytes|filesizeformat }}
+                <form class="inline" method="post" action="{% url 'file-star-page-action' file.id 'unstar' %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="next" value="starred">
+                    <button type="submit">Unstar</button>
+                </form>
             </li>
         {% empty %}
             <li>No starred files.</li>

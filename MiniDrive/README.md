@@ -73,6 +73,26 @@ curl -X POST http://127.0.0.1:8000/api/auth/logout/ \
 Các nhóm API chính nằm dưới `/api/folders/`, `/api/files/`, `/api/trash/`,
 `/api/share-links/`, `/api/activity-logs/` và `/api/staff/`.
 
+Các endpoint chính:
+
+```text
+GET/POST     /api/folders/
+GET/PATCH/DELETE /api/folders/<id>/
+POST         /api/folders/<id>/restore/
+GET          /api/files/
+POST         /api/files/upload/
+GET/PATCH/DELETE /api/files/<id>/
+POST         /api/files/<id>/star/
+POST         /api/files/<id>/unstar/
+GET          /api/files/<id>/download/
+POST         /api/files/<id>/share-links/
+GET          /api/trash/files/
+GET          /api/trash/folders/
+GET          /api/staff/storage-stats/
+GET          /api/staff/file-summary/
+GET          /api/staff/activity-logs/
+```
+
 ## Kiểm tra project
 
 ```bash
@@ -185,9 +205,12 @@ Các nhóm API chính nằm dưới `/api/folders/`, `/api/files/`, `/api/trash/
     `delay()` là cách gọi ngắn. `apply_async()` hỗ trợ thêm thời điểm chạy, queue
     và các tùy chọn khác.
 
-Scan file, gửi email và purge trash nên chạy nền vì có thể chậm hoặc không cần hoàn
-thành trước khi trả response. Nếu worker không chạy, task nằm trong broker và chờ
-worker hoạt động lại.
+**Vì sao scan file, gửi email và purge trash nên chạy nền?** Những việc này có thể
+chậm hoặc không cần hoàn thành trước khi trả response. Chạy nền giúp request upload
+trả kết quả sớm hơn và không bắt user chờ.
+
+**Nếu worker không chạy thì task có được xử lý không?** Không xử lý ngay. Task đã
+enqueue sẽ nằm trong broker và chờ đến khi worker hoạt động lại.
 
 ### Django REST Framework
 

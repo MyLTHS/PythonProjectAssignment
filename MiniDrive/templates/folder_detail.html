@@ -17,6 +17,15 @@
     </form>
 
     <section>
+        <h3>Edit folder</h3>
+        <form method="post">
+            {% csrf_token %}
+            {{ folder_edit_form.as_p }}
+            <button type="submit" name="action" value="edit">Save folder</button>
+        </form>
+    </section>
+
+    <section>
         <h3>Create subfolder</h3>
         <form method="post">
             {% csrf_token %}
