@@ -1,8 +1,9 @@
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from django.db.models import Sum
-from django.shortcuts import get_object_or_404
+from django.db.models import F, Sum
+from django.http import FileResponse
+from django.shortcuts import get_object_or_404, redirect
 from django.views.generic import TemplateView
 from rest_framework import generics, status
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -10,12 +11,14 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import ActivityLog, FileItem, Folder
+from .models import ActivityLog, FileItem, Folder, ShareLink
+from .permissions import CanDownloadFile, CanViewFile
 from .serializers import (
     FileListSerializer,
     FileUpdateSerializer,
     FileUploadSerializer,
     FolderSerializer,
+    ShareLinkSerializer,
 )
 
 
@@ -245,3 +248,95 @@ class FileRestoreAPIView(APIView):
             )
 
         return Response(FileListSerializer(file_item).data, status=status.HTTP_200_OK)
+
+
+class ShareLinkListCreateAPIView(generics.ListCreateAPIView):
+    serializer_class = ShareLinkSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return ShareLink.objects.filter(
+            created_by=self.request.user,
+        ).select_related("file").order_by("-created_at")
+
+    def perform_create(self, serializer):
+        with transaction.atomic():
+            share_link = serializer.save()
+
+            ActivityLog.objects.create(
+                user=self.request.user,
+                action=ActivityLog.ACTION_SHARE,
+                file=share_link.file,
+                folder=share_link.file.folder,
+                detail=f"Created share link for {share_link.file.name}",
+            )
+
+
+class ShareLinkDestroyAPIView(generics.DestroyAPIView):
+    serializer_class = ShareLinkSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return ShareLink.objects.filter(created_by=self.request.user)
+
+    def perform_destroy(self, instance):
+        instance.is_active = False
+        instance.save(update_fields=["is_active"])
+
+
+class SharedFileViewAPIView(generics.RetrieveAPIView):
+    serializer_class = FileListSerializer
+    permission_classes = [CanViewFile]
+
+    def get_queryset(self):
+        return (
+            FileItem.objects.active()
+            .select_related("owner", "folder")
+            .prefetch_related("labels")
+        )
+
+    def retrieve(self, request, *args, **kwargs):
+        file_item = self.get_object()
+        token = request.query_params.get("token")
+
+        if token:
+            ShareLink.objects.active().filter(
+                file=file_item,
+                token=token,
+            ).update(view_count=F("view_count") + 1)
+
+        return Response(self.get_serializer(file_item).data)
+
+
+class FileDownloadAPIView(APIView):
+    permission_classes = [CanDownloadFile]
+
+    def get(self, request, pk):
+        file_item = get_object_or_404(FileItem.objects.active(), pk=pk)
+        self.check_object_permissions(request, file_item)
+
+        FileItem.objects.filter(pk=file_item.pk).update(
+            download_count=F("download_count") + 1,
+        )
+
+        token = request.query_params.get("token")
+        if token:
+            ShareLink.objects.active().filter(
+                file=file_item,
+                token=token,
+            ).update(view_count=F("view_count") + 1)
+
+        if file_item.file:
+            return FileResponse(
+                file_item.file.open("rb"),
+                as_attachment=True,
+                filename=file_item.name,
+            )
+
+        if file_item.external_url:
+            return redirect(file_item.external_url)
+
+        return Response(
+            {"detail": "File content does not exist."},
+            status=status.HTTP_404_NOT_FOUND,
+        )

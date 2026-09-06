@@ -256,7 +256,24 @@ class FileUpdateSerializer(serializers.ModelSerializer):
 class ShareLinkSerializer(serializers.ModelSerializer):
     class Meta:
         model = ShareLink
-        fields = ["file", "permission", "recipient_email", "expires_at"]
+        fields = [
+            "id",
+            "file",
+            "token",
+            "permission",
+            "recipient_email",
+            "is_active",
+            "expires_at",
+            "view_count",
+            "created_at",
+        ]
+        read_only_fields = [
+            "id",
+            "token",
+            "is_active",
+            "view_count",
+            "created_at",
+        ]
 
     def validate(self, attrs):
         request = self.context.get("request")

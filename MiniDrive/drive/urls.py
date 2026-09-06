@@ -3,12 +3,16 @@ from django.urls import path
 from .views import (
     DashboardView,
     FileDetailAPIView,
+    FileDownloadAPIView,
     FileListAPIView,
     FileRestoreAPIView,
     FileUploadAPIView,
     FolderDetailAPIView,
     FolderListCreateAPIView,
     FolderRestoreAPIView,
+    SharedFileViewAPIView,
+    ShareLinkDestroyAPIView,
+    ShareLinkListCreateAPIView,
     TrashListAPIView,
 )
 
@@ -43,4 +47,24 @@ urlpatterns = [
         name="file-restore",
     ),
     path("api/trash/", TrashListAPIView.as_view(), name="trash-list"),
+    path(
+        "api/share-links/",
+        ShareLinkListCreateAPIView.as_view(),
+        name="share-link-list-create",
+    ),
+    path(
+        "api/share-links/<int:pk>/",
+        ShareLinkDestroyAPIView.as_view(),
+        name="share-link-destroy",
+    ),
+    path(
+        "api/files/<int:pk>/view/",
+        SharedFileViewAPIView.as_view(),
+        name="shared-file-view",
+    ),
+    path(
+        "api/files/<int:pk>/download/",
+        FileDownloadAPIView.as_view(),
+        name="file-download",
+    ),
 ]
