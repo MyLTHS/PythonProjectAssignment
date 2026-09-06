@@ -1,3 +1,4 @@
+from django.contrib.auth import authenticate
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
@@ -6,8 +7,9 @@ from django.http import FileResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.views.generic import TemplateView
 from rest_framework import generics, status
+from rest_framework.authtoken.models import Token
 from rest_framework.parsers import FormParser, MultiPartParser
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -20,6 +22,50 @@ from .serializers import (
     FolderSerializer,
     ShareLinkSerializer,
 )
+
+
+class LoginAPIView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        username = request.data.get("username", "").strip()
+        password = request.data.get("password", "")
+
+        if not username or not password:
+            return Response(
+                {"detail": "Username and password are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = authenticate(request=request, username=username, password=password)
+        if user is None:
+            return Response(
+                {"detail": "Invalid username or password."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        token, _ = Token.objects.get_or_create(user=user)
+
+        return Response(
+            {
+                "token": token.key,
+                "token_type": "Bearer",
+                "user": {
+                    "id": user.id,
+                    "username": user.username,
+                    "email": user.email,
+                },
+            }
+        )
+
+
+class LogoutAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        request.auth.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class DashboardView(LoginRequiredMixin, TemplateView):

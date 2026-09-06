@@ -10,6 +10,8 @@ from .views import (
     FolderDetailAPIView,
     FolderListCreateAPIView,
     FolderRestoreAPIView,
+    LoginAPIView,
+    LogoutAPIView,
     SharedFileViewAPIView,
     ShareLinkDestroyAPIView,
     ShareLinkListCreateAPIView,
@@ -19,6 +21,8 @@ from .views import (
 
 urlpatterns = [
     path("", DashboardView.as_view(), name="dashboard"),
+    path("api/auth/login/", LoginAPIView.as_view(), name="api-login"),
+    path("api/auth/logout/", LogoutAPIView.as_view(), name="api-logout"),
     path(
         "api/folders/",
         FolderListCreateAPIView.as_view(),
