@@ -1,16 +1,16 @@
-from django.contrib.auth import authenticate
+from django.contrib.auth import authenticate, logout as django_logout
 from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
 from django.contrib.auth.models import User
 from django.db import transaction
 from django.db.models import F, Sum
-from django.http import FileResponse, JsonResponse
+from django.http import FileResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.utils import timezone
 from django.views import View
 from django.views.generic import TemplateView
 from rest_framework import generics, status
 from rest_framework.authtoken.models import Token
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
@@ -87,6 +87,7 @@ class LogoutAPIView(APIView):
             request.auth.delete()
         else:
             Token.objects.filter(user=request.user).delete()
+        django_logout(request._request)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -616,12 +617,13 @@ class FolderRestoreAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        folder = get_object_or_404(
-            Folder,
+        folders = Folder.objects.filter(
             pk=pk,
-            owner=request.user,
             is_deleted=True,
         )
+        if not request.user.is_staff:
+            folders = folders.filter(owner=request.user)
+        folder = get_object_or_404(folders)
 
         if folder.parent and folder.parent.is_deleted:
             return Response(
@@ -632,7 +634,7 @@ class FolderRestoreAPIView(APIView):
         folder_ids = folder_tree_ids(folder)
         files = FileItem.objects.filter(folder_id__in=folder_ids, is_deleted=True)
         restore_size = files.aggregate(total=Sum("size_bytes"))["total"] or 0
-        profile, _ = Profile.objects.get_or_create(user=request.user)
+        profile, _ = Profile.objects.get_or_create(user=folder.owner)
         if not profile.can_upload(restore_size):
             return Response(
                 {"detail": "Not enough storage quota to restore this folder."},
@@ -810,12 +812,13 @@ class FileRestoreAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        file_item = get_object_or_404(
-            FileItem,
+        files = FileItem.objects.filter(
             pk=pk,
-            owner=request.user,
             is_deleted=True,
         )
+        if not request.user.is_staff:
+            files = files.filter(owner=request.user)
+        file_item = get_object_or_404(files)
 
         if file_item.folder and file_item.folder.is_deleted:
             return Response(
@@ -823,13 +826,13 @@ class FileRestoreAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not hasattr(request.user, "profile"):
+        if not hasattr(file_item.owner, "profile"):
             return Response(
                 {"detail": "User profile does not exist."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        profile = request.user.profile
+        profile = file_item.owner.profile
         if not profile.can_upload(file_item.size_bytes):
             return Response(
                 {"detail": "Not enough storage quota to restore this file."},
@@ -994,20 +997,39 @@ class FileDownloadAPIView(APIView):
     permission_classes = [CanDownloadFile]
 
     def dispatch(self, request, *args, **kwargs):
-        self.file_item = get_object_or_404(
-            FileItem.objects.active().select_related("owner", "folder"),
-            pk=kwargs["pk"],
-        )
-        if self.file_item.status != FileItem.STATUS_READY:
-            return JsonResponse(
-                {"detail": "File is not ready for download."},
-                status=status.HTTP_403_FORBIDDEN,
+        self.args = args
+        self.kwargs = kwargs
+        request = self.initialize_request(request, *args, **kwargs)
+        self.request = request
+        self.headers = self.default_response_headers
+
+        try:
+            self.initial(request, *args, **kwargs)
+            self.file_item = get_object_or_404(
+                FileItem.objects.active().select_related("owner", "folder"),
+                pk=kwargs["pk"],
             )
-        return super().dispatch(request, *args, **kwargs)
+            self.check_object_permissions(request, self.file_item)
+            if self.file_item.status != FileItem.STATUS_READY:
+                raise PermissionDenied("File is not ready for download.")
+
+            if request.method.lower() in self.http_method_names:
+                handler = getattr(
+                    self,
+                    request.method.lower(),
+                    self.http_method_not_allowed,
+                )
+            else:
+                handler = self.http_method_not_allowed
+            response = handler(request, *args, **kwargs)
+        except Exception as error:
+            response = self.handle_exception(error)
+
+        self.response = self.finalize_response(request, response, *args, **kwargs)
+        return self.response
 
     def get(self, request, pk):
         file_item = self.file_item
-        self.check_object_permissions(request, file_item)
 
         FileItem.objects.filter(pk=file_item.pk).update(
             download_count=F("download_count") + 1,

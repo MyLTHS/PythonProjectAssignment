@@ -146,6 +146,8 @@ class DashboardViewTests(TestCase):
         self.assertContains(response, "new FormData(uploadForm)")
         self.assertContains(response, '"X-CSRFToken": csrfToken')
         self.assertContains(response, 'event.preventDefault()')
+        self.assertContains(response, 'id="uploaded-file-list"')
+        self.assertContains(response, 'uploadedFileList.prepend(createFileItem(result))')
 
     def test_search_finds_a_file_inside_a_child_folder(self):
         self.client.login(username="lym", password="secret123")
@@ -457,6 +459,45 @@ class AssignmentApiTests(TestCase):
         response = self.client.post(reverse("api-logout"))
 
         self.assertEqual(response.status_code, 204)
+        self.assertEqual(self.client.get(reverse("dashboard")).status_code, 302)
+
+    def test_staff_can_restore_a_file_deleted_through_the_detail_api(self):
+        staff = User.objects.create_user(
+            username="restore-staff", password="secret123", is_staff=True
+        )
+        self.client.logout()
+        self.client.login(username="restore-staff", password="secret123")
+
+        delete_response = self.client.delete(
+            reverse("file-detail", args=[self.file_item.pk])
+        )
+        restore_response = self.client.post(
+            reverse("file-restore", args=[self.file_item.pk])
+        )
+
+        self.assertEqual(delete_response.status_code, 204)
+        self.assertEqual(restore_response.status_code, 200)
+        self.file_item.refresh_from_db()
+        self.assertFalse(self.file_item.is_deleted)
+
+    def test_staff_can_restore_a_folder_deleted_through_the_detail_api(self):
+        staff = User.objects.create_user(
+            username="folder-restore-staff", password="secret123", is_staff=True
+        )
+        self.client.logout()
+        self.client.login(username="folder-restore-staff", password="secret123")
+
+        delete_response = self.client.delete(
+            reverse("folder-detail", args=[self.folder.pk])
+        )
+        restore_response = self.client.post(
+            reverse("folder-restore", args=[self.folder.pk])
+        )
+
+        self.assertEqual(delete_response.status_code, 204)
+        self.assertEqual(restore_response.status_code, 200)
+        self.folder.refresh_from_db()
+        self.assertFalse(self.folder.is_deleted)
 
     def test_staff_can_view_another_users_file_but_a_regular_user_cannot(self):
         staff = User.objects.create_user(

@@ -21,18 +21,31 @@
     <button id="upload-button" type="submit">Upload</button>
 </form>
 <p id="upload-message" aria-live="polite"></p>
+<section id="recent-upload-section" hidden>
+    <h4>Recently uploaded</h4>
+    <ul id="uploaded-file-list"></ul>
+</section>
 
 <script>
     const uploadForm = document.getElementById("upload-form");
     const uploadButton = document.getElementById("upload-button");
     const uploadMessage = document.getElementById("upload-message");
+    const recentUploadSection = document.getElementById("recent-upload-section");
+    const uploadedFileList = document.getElementById("uploaded-file-list");
+
+    function createFileItem(fileData) {
+        const item = document.createElement("li");
+        const link = document.createElement("a");
+        link.href = "/files/" + fileData.id + "/";
+        link.textContent = fileData.name;
+        item.appendChild(link);
+        return item;
+    }
 
     uploadForm.addEventListener("submit", async function (event) {
         event.preventDefault();
 
-        const fileInput = document.getElementById("upload-file");
         const folderInput = document.getElementById("upload-folder");
-        const selectedFile = fileInput.files[0];
         const formData = new FormData(uploadForm);
         const csrfToken = uploadForm.querySelector("[name=csrfmiddlewaretoken]").value;
 
@@ -62,12 +75,10 @@
                 const emptyMessage = document.getElementById("empty-file-message");
                 if (emptyMessage) emptyMessage.remove();
 
-                const item = document.createElement("li");
-                const link = document.createElement("a");
-                link.href = "/files/" + result.id + "/";
-                link.textContent = result.name;
-                item.appendChild(link);
-                document.getElementById("root-file-list").prepend(item);
+                document.getElementById("root-file-list").prepend(createFileItem(result));
+            } else {
+                uploadedFileList.prepend(createFileItem(result));
+                recentUploadSection.hidden = false;
             }
 
             const usedStorage = document.getElementById("used-storage");
