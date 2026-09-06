@@ -33,7 +33,10 @@ class FolderSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         request = self.context.get("request")
         owner = request.user if request else None
-        parent = attrs.get("parent")
+        parent = attrs.get(
+            "parent",
+            self.instance.parent if self.instance else None,
+        )
 
         if not owner:
             raise serializers.ValidationError("Authenticated user is required.")

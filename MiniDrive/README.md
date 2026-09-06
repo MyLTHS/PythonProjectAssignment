@@ -1,5 +1,23 @@
 # MiniDrive
 
+MiniDrive là bài tập Django mô phỏng một dịch vụ lưu trữ file nhỏ. Dự án hiện có
+domain model, form, serializer, permission và Dashboard cơ bản; một số phần như API,
+AJAX và Celery mới là nội dung cần tiếp tục hoàn thiện.
+
+## Tài liệu học dự án
+
+- [Sổ tay MiniDrive](docs/SO_TAY_DU_AN.md): bản đồ toàn bộ dự án, luồng request,
+  giải thích từng file, câu hỏi ôn tập và lộ trình làm tiếp.
+
+Chạy kiểm tra từ thư mục gốc của repository:
+
+```bash
+./.venv/bin/python MiniDrive/manage.py check
+./.venv/bin/python MiniDrive/manage.py test drive
+```
+
+## Câu hỏi cần ôn tập
+
 
 1. Background task là gì?
 2. Vì sao scan file, gửi email, purge trash nên chạy nền?

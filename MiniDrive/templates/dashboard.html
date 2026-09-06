@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+    <section>
+        <h2>Dashboard</h2>
+        <p>Used storage: {{ storage_used_bytes }} bytes</p>
+        <p>Quota: {{ storage_quota_bytes }} bytes</p>
+    </section>
+
+    <section>
+        <form method="get">
+            <input type="text" name="q" value="{{ keyword }}" placeholder="Search files">
+            <button type="submit">Search</button>
+        </form>
+    </section>
+
+    <section>
+        <h3>Root folders</h3>
+        <ul>
+            {% for folder in root_folders %}
+                <li>{{ folder.name }}</li>
+            {% empty %}
+                <li>No folders yet.</li>
+            {% endfor %}
+        </ul>
+    </section>
+
+    <section>
+        <h3>Root files</h3>
+        <ul>
+            {% for file in root_files %}
+                <li>{{ file.name }}</li>
+            {% empty %}
+                <li>No files yet.</li>
+            {% endfor %}
+        </ul>
+    </section>
+{% endblock %}

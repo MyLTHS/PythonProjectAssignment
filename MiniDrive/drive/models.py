@@ -1,5 +1,6 @@
 import mimetypes
 import uuid
+from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth.models import User
@@ -63,7 +64,14 @@ class Label(models.Model):
         super().save(*args, **kwargs)
 
 
+class FolderQuerySet(models.QuerySet):
+    def roots(self):
+        return self.filter(parent__isnull=True, is_deleted=False)
+
+
 class Folder(models.Model):
+    objects = FolderQuerySet.as_manager()
+
     owner = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
@@ -124,8 +132,73 @@ class Folder(models.Model):
         self.full_clean()
         super().save(*args, **kwargs)
 
-#không hiểu cần phải đọc và tìm hiểu các phần này
+
+class FileItemQuerySet(models.QuerySet):
+    def active(self):
+        return self.filter(is_deleted=False)
+
+    def trash(self):
+        return self.filter(is_deleted=True)
+
+    def search(self, keyword):
+        if not keyword:
+            return self
+
+        return self.filter(
+            models.Q(name__icontains=keyword)
+            | models.Q(description__icontains=keyword)
+            | models.Q(labels__name__icontains=keyword)
+        ).distinct()
+
+    def size_between(self, min_bytes, max_bytes):
+        qs = self
+
+        if min_bytes is not None:
+            qs = qs.filter(size_bytes__gte=min_bytes)
+
+        if max_bytes is not None:
+            qs = qs.filter(size_bytes__lte=max_bytes)
+
+        return qs
+
+    def due_for_purge(self, days=30):
+        cutoff = timezone.now() - timedelta(days=days)
+        return self.filter(is_deleted=True, deleted_at__lte=cutoff)
+
+
+class FileItemManager(models.Manager.from_queryset(FileItemQuerySet)):
+    def storage_summary_by_user(self):
+        return (
+            self.active()
+            .values("owner__id", "owner__username")
+            .annotate(
+                total_storage=models.Sum("size_bytes"),
+                file_count=models.Count("id"),
+            )
+            .order_by("-total_storage")
+        )
+
+    def file_type_summary(self):
+        return (
+            self.active()
+            .values("mime_type")
+            .annotate(
+                file_count=models.Count("id"),
+                total_storage=models.Sum("size_bytes"),
+            )
+            .order_by("-file_count")
+        )
+
+    def top_labels(self, limit=5):
+        return (
+            Label.objects.annotate(file_count=models.Count("files"))
+            .order_by("-file_count", "name")[:limit]
+        )
+
+
 class FileItem(models.Model):
+    objects = FileItemManager()
+
     STATUS_PROCESSING = "processing"
     STATUS_READY = "ready"
     STATUS_INFECTED = "infected"
@@ -227,7 +300,19 @@ class FileItem(models.Model):
         super().save(*args, **kwargs)
 
 
+class ShareLinkQuerySet(models.QuerySet):
+    def active(self):
+        return self.filter(is_active=True).filter(
+            models.Q(expires_at__isnull=True) | models.Q(expires_at__gt=timezone.now())
+        )
+
+    def expired(self):
+        return self.filter(expires_at__isnull=False, expires_at__lte=timezone.now())
+
+
 class ShareLink(models.Model):
+    objects = ShareLinkQuerySet.as_manager()
+
     PERMISSION_VIEW = "view"
     PERMISSION_DOWNLOAD = "download"
     PERMISSION_CHOICES = [
