@@ -159,8 +159,8 @@ CELERY_BEAT_SCHEDULE = {
         "task": "drive.tasks.expire_share_links",
         "schedule": 3600.0,
     },
-    "recalculate-storage-daily": {
+    "recalculate-storage-hourly": {
         "task": "drive.tasks.recalculate_user_storage",
-        "schedule": 86400.0,
+        "schedule": 3600.0,
     },
 }

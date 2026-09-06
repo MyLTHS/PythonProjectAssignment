@@ -1,7 +1,9 @@
+from pathlib import Path
+
 from celery import shared_task
 from django.db.models import Sum
 
-from .models import ActivityLog, FileItem, Profile, ShareLink
+from .models import ActivityLog, FileItem, Folder, Profile, ShareLink
 
 
 @shared_task
@@ -16,9 +18,31 @@ def scan_uploaded_file(file_id):
     finally:
         file_item.file.close()
 
+    extension = Path(file_item.name).suffix.lower()
+    allowed_extensions = {".txt", ".pdf", ".png", ".jpg", ".jpeg", ".csv", ".xlsx", ".zip"}
+    blocked_extensions = {".exe", ".bat", ".sh"}
+    allowed_mime_types = {
+        "text/plain",
+        "text/csv",
+        "application/pdf",
+        "image/png",
+        "image/jpeg",
+        "application/zip",
+        "application/x-zip-compressed",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }
+    max_size = 20 * 1024 * 1024
     eicar_signature = b"EICAR-STANDARD-ANTIVIRUS-TEST-FILE"
+
     if eicar_signature in content:
         file_item.status = FileItem.STATUS_INFECTED
+    elif (
+        extension in blocked_extensions
+        or extension not in allowed_extensions
+        or file_item.mime_type not in allowed_mime_types
+        or file_item.size_bytes > max_size
+    ):
+        file_item.status = FileItem.STATUS_BLOCKED
     else:
         file_item.status = FileItem.STATUS_READY
 
@@ -35,24 +59,57 @@ def scan_uploaded_file(file_id):
 
 @shared_task
 def purge_trash(days=30):
-    files = list(
-        FileItem.objects.due_for_purge(days).select_related("owner", "folder")
-    )
-
-    for file_item in files:
-        ActivityLog.objects.create(
+    file_ids = list(FileItem.objects.due_for_purge(days).values_list("id", flat=True))
+    files = list(FileItem.objects.filter(id__in=file_ids).select_related("owner", "folder"))
+    logs = [
+        ActivityLog(
             user=file_item.owner,
             action=ActivityLog.ACTION_PURGE,
             file=file_item,
             folder=file_item.folder,
             detail=f"Permanently deleted {file_item.name}",
         )
+        for file_item in files
+    ]
+    ActivityLog.objects.bulk_create(logs)
 
+    for file_item in files:
         if file_item.file:
             file_item.file.delete(save=False)
         file_item.delete()
 
-    return len(files)
+    folder_ids = list(Folder.objects.due_for_purge(days).values_list("id", flat=True))
+    folders = list(Folder.objects.filter(id__in=folder_ids).select_related("owner"))
+    ActivityLog.objects.bulk_create(
+        [
+            ActivityLog(
+                user=folder.owner,
+                action=ActivityLog.ACTION_PURGE,
+                folder=folder,
+                detail=f"Permanently deleted folder {folder.name}",
+            )
+            for folder in folders
+        ]
+    )
+
+    folder_tree_ids = set(folder_ids)
+    pending_ids = folder_ids
+    while pending_ids:
+        child_ids = list(
+            Folder.objects.filter(parent_id__in=pending_ids).values_list(
+                "id", flat=True
+            )
+        )
+        folder_tree_ids.update(child_ids)
+        pending_ids = child_ids
+
+    folder_files = FileItem.objects.filter(folder_id__in=folder_tree_ids)
+    for file_item in folder_files:
+        if file_item.file:
+            file_item.file.delete(save=False)
+    Folder.objects.filter(id__in=folder_tree_ids).delete()
+
+    return len(files) + len(folders)
 
 
 @shared_task

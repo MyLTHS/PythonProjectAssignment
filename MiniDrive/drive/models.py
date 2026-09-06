@@ -65,8 +65,18 @@ class Label(models.Model):
 
 
 class FolderQuerySet(models.QuerySet):
+    def active(self):
+        return self.filter(is_deleted=False)
+
+    def trash(self):
+        return self.filter(is_deleted=True)
+
     def roots(self):
-        return self.filter(parent__isnull=True, is_deleted=False)
+        return self.active().filter(parent__isnull=True)
+
+    def due_for_purge(self, days=30):
+        cutoff = timezone.now() - timedelta(days=days)
+        return self.trash().filter(deleted_at__lte=cutoff)
 
 
 class Folder(models.Model):
@@ -156,10 +166,25 @@ class Folder(models.Model):
 
 class FileItemQuerySet(models.QuerySet):
     def active(self):
-        return self.filter(is_deleted=False)
+        return self.filter(is_deleted=False).exclude(folder__is_deleted=True)
 
     def trash(self):
         return self.filter(is_deleted=True)
+
+    def starred(self):
+        return self.active().filter(is_starred=True)
+
+    def ready(self):
+        return self.active().filter(status=FileItem.STATUS_READY)
+
+    def in_folder(self, folder_id):
+        return self.filter(folder_id=folder_id)
+
+    def owned_by(self, user):
+        return self.filter(owner=user)
+
+    def by_type(self, file_type):
+        return self.filter(mime_type__contains=file_type)
 
     def search(self, keyword):
         if not keyword:
@@ -180,6 +205,14 @@ class FileItemQuerySet(models.QuerySet):
         if max_bytes is not None:
             qs = qs.filter(size_bytes__lte=max_bytes)
 
+        return qs
+
+    def updated_between(self, start_date, end_date):
+        qs = self
+        if start_date is not None:
+            qs = qs.filter(updated_at__gte=start_date)
+        if end_date is not None:
+            qs = qs.filter(updated_at__lte=end_date)
         return qs
 
     def due_for_purge(self, days=30):

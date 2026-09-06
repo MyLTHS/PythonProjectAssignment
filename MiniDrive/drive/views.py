@@ -1,10 +1,12 @@
 from django.contrib.auth import authenticate
-from django.contrib.auth.mixins import LoginRequiredMixin
-from django.core.exceptions import ValidationError as DjangoValidationError
+from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
+from django.contrib.auth.models import User
 from django.db import transaction
 from django.db.models import F, Sum
-from django.http import FileResponse
+from django.http import FileResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
+from django.utils import timezone
+from django.views import View
 from django.views.generic import TemplateView
 from rest_framework import generics, status
 from rest_framework.authtoken.models import Token
@@ -13,6 +15,7 @@ from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .forms import FileMetadataForm, FolderForm, ShareLinkForm
 from .models import ActivityLog, FileItem, Folder, Profile, ShareLink
 from .permissions import CanDownloadFile, CanViewFile
 from .serializers import (
@@ -24,6 +27,18 @@ from .serializers import (
     ShareLinkSerializer,
 )
 from .tasks import scan_uploaded_file
+
+
+def folder_tree_ids(folder):
+    ids = [folder.pk]
+    pending = [folder.pk]
+    while pending:
+        children = list(
+            Folder.objects.filter(parent_id__in=pending).values_list("id", flat=True)
+        )
+        ids.extend(children)
+        pending = children
+    return ids
 
 
 class LoginAPIView(APIView):
@@ -112,9 +127,26 @@ class StaffReportAPIView(APIView):
 
         return Response(
             {
+                "total_users": User.objects.count(),
+                "total_files": FileItem.objects.active().count(),
+                "total_storage": (
+                    FileItem.objects.active().aggregate(total=Sum("size_bytes"))["total"]
+                    or 0
+                ),
+                "trash_files": FileItem.objects.trash().count(),
+                "unsafe_files": FileItem.objects.filter(
+                    status__in=[FileItem.STATUS_INFECTED, FileItem.STATUS_BLOCKED]
+                ).count(),
+                "expired_share_links": ShareLink.objects.expired().count(),
                 "storage_by_user": storage_by_user,
                 "file_types": file_types,
                 "top_labels": top_labels,
+                "recent_activity": ActivityLogSerializer(
+                    ActivityLog.objects.select_related("user", "file", "folder")
+                    .all()
+                    .order_by("-created_at")[:10],
+                    many=True,
+                ).data,
             }
         )
 
@@ -153,9 +185,260 @@ class DashboardView(LoginRequiredMixin, TemplateView):
                 "storage_quota_bytes": (
                     owner.profile.quota_bytes if hasattr(owner, "profile") else 0
                 ),
+                "folder_form": FolderForm(owner=owner),
             }
         )
         return context
+
+    def post(self, request, *args, **kwargs):
+        form = FolderForm(request.POST, owner=request.user)
+        form.instance.owner = request.user
+        if form.is_valid():
+            form.save()
+            return redirect("dashboard")
+
+        context = self.get_context_data(**kwargs)
+        context["folder_form"] = form
+        return self.render_to_response(context)
+
+
+class FolderDetailPageView(LoginRequiredMixin, TemplateView):
+    template_name = "folder_detail.html"
+
+    def get_folder(self):
+        return get_object_or_404(
+            Folder.objects.active(),
+            pk=self.kwargs["pk"],
+            owner=self.request.user,
+        )
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        folder = self.get_folder()
+        breadcrumb = []
+        current = folder
+        while current:
+            breadcrumb.append(current)
+            current = current.parent
+
+        context.update(
+            {
+                "folder": folder,
+                "breadcrumb": reversed(breadcrumb),
+                "child_folders": folder.children.active().order_by("name"),
+                "files": FileItem.objects.active()
+                .in_folder(folder.pk)
+                .owned_by(self.request.user)
+                .prefetch_related("labels"),
+                "folder_form": FolderForm(owner=self.request.user, initial={"parent": folder}),
+            }
+        )
+        return context
+
+    def post(self, request, *args, **kwargs):
+        folder = self.get_folder()
+        data = request.POST.copy()
+        data["parent"] = folder.pk
+        form = FolderForm(data, owner=request.user)
+        form.instance.owner = request.user
+        if form.is_valid():
+            form.save()
+            return redirect("folder-detail-page", pk=folder.pk)
+
+        context = self.get_context_data(**kwargs)
+        context["folder_form"] = form
+        return self.render_to_response(context)
+
+
+class FileDetailPageView(LoginRequiredMixin, TemplateView):
+    template_name = "file_detail.html"
+
+    def get_file(self):
+        return get_object_or_404(
+            FileItem.objects.active().prefetch_related("labels"),
+            pk=self.kwargs["pk"],
+            owner=self.request.user,
+        )
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        file_item = self.get_file()
+        context.update(
+            {
+                "file": file_item,
+                "metadata_form": FileMetadataForm(
+                    instance=file_item,
+                    owner=self.request.user,
+                ),
+                "share_form": ShareLinkForm(
+                    file_item=file_item,
+                    created_by=self.request.user,
+                ),
+            }
+        )
+        return context
+
+    def post(self, request, *args, **kwargs):
+        file_item = self.get_file()
+        action = request.POST.get("action")
+
+        if action == "share":
+            form = ShareLinkForm(
+                request.POST,
+                file_item=file_item,
+                created_by=request.user,
+            )
+            if form.is_valid():
+                share_link = form.save(commit=False)
+                share_link.file = file_item
+                share_link.created_by = request.user
+                share_link.save()
+                return redirect("shared-links-page")
+            context = self.get_context_data(**kwargs)
+            context["share_form"] = form
+            return self.render_to_response(context)
+
+        form = FileMetadataForm(request.POST, instance=file_item, owner=request.user)
+        if form.is_valid():
+            form.save()
+            return redirect("file-detail-page", pk=file_item.pk)
+        context = self.get_context_data(**kwargs)
+        context["metadata_form"] = form
+        return self.render_to_response(context)
+
+
+class TrashPageView(LoginRequiredMixin, TemplateView):
+    template_name = "trash.html"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["files"] = FileItem.objects.trash().owned_by(self.request.user)
+        context["folders"] = Folder.objects.trash().filter(owner=self.request.user)
+        return context
+
+
+class StarredPageView(LoginRequiredMixin, TemplateView):
+    template_name = "starred.html"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["files"] = FileItem.objects.starred().owned_by(self.request.user)
+        return context
+
+
+class SharedLinksPageView(LoginRequiredMixin, TemplateView):
+    template_name = "shared_links.html"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["share_links"] = ShareLink.objects.filter(
+            created_by=self.request.user
+        ).select_related("file")
+        return context
+
+
+class StaffDashboardPageView(UserPassesTestMixin, TemplateView):
+    template_name = "staff_dashboard.html"
+
+    def test_func(self):
+        return self.request.user.is_staff
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        active_files = FileItem.objects.active()
+        context.update(
+            {
+                "total_users": User.objects.count(),
+                "total_files": active_files.count(),
+                "total_storage": active_files.aggregate(total=Sum("size_bytes"))["total"] or 0,
+                "trash_files": FileItem.objects.trash().count(),
+                "unsafe_files": FileItem.objects.filter(
+                    status__in=[FileItem.STATUS_INFECTED, FileItem.STATUS_BLOCKED]
+                ).count(),
+                "expired_links": ShareLink.objects.expired().count(),
+                "top_users": FileItem.objects.storage_summary_by_user()[:5],
+                "recent_activity": ActivityLog.objects.select_related("user", "file")
+                .all()
+                .order_by("-created_at")[:10],
+            }
+        )
+        return context
+
+
+class FileTrashPageActionView(LoginRequiredMixin, View):
+    def post(self, request, pk, action):
+        if action == "delete":
+            file_item = get_object_or_404(
+                FileItem.objects.active(), pk=pk, owner=request.user
+            )
+            file_item.is_deleted = True
+            file_item.save()
+            profile, _ = Profile.objects.get_or_create(user=request.user)
+            profile.used_storage_bytes = max(
+                0, profile.used_storage_bytes - file_item.size_bytes
+            )
+            profile.save(update_fields=["used_storage_bytes"])
+        elif action == "restore":
+            file_item = get_object_or_404(
+                FileItem.objects.trash(), pk=pk, owner=request.user
+            )
+            profile, _ = Profile.objects.get_or_create(user=request.user)
+            if profile.can_upload(file_item.size_bytes):
+                file_item.is_deleted = False
+                file_item.save()
+                profile.used_storage_bytes += file_item.size_bytes
+                profile.save(update_fields=["used_storage_bytes"])
+        elif action == "permanent":
+            file_item = get_object_or_404(
+                FileItem.objects.trash(), pk=pk, owner=request.user
+            )
+            if file_item.file:
+                file_item.file.delete(save=False)
+            file_item.delete()
+        return redirect("trash-page")
+
+
+class FolderTrashPageActionView(LoginRequiredMixin, View):
+    def post(self, request, pk, action):
+        folder = get_object_or_404(Folder, pk=pk, owner=request.user)
+        folder_ids = folder_tree_ids(folder)
+
+        if action == "delete" and not folder.is_deleted:
+            deleted_at = timezone.now()
+            files = FileItem.objects.active().filter(folder_id__in=folder_ids)
+            removed_size = files.aggregate(total=Sum("size_bytes"))["total"] or 0
+            Folder.objects.filter(id__in=folder_ids).update(
+                is_deleted=True, deleted_at=deleted_at
+            )
+            files.update(is_deleted=True, deleted_at=deleted_at)
+            profile, _ = Profile.objects.get_or_create(user=request.user)
+            profile.used_storage_bytes = max(
+                0, profile.used_storage_bytes - removed_size
+            )
+            profile.save(update_fields=["used_storage_bytes"])
+        elif action == "restore" and folder.is_deleted:
+            files = FileItem.objects.filter(folder_id__in=folder_ids, is_deleted=True)
+            restore_size = files.aggregate(total=Sum("size_bytes"))["total"] or 0
+            profile, _ = Profile.objects.get_or_create(user=request.user)
+            if profile.can_upload(restore_size):
+                Folder.objects.filter(id__in=folder_ids).update(
+                    is_deleted=False, deleted_at=None
+                )
+                files.update(is_deleted=False, deleted_at=None)
+                profile.used_storage_bytes += restore_size
+                profile.save(update_fields=["used_storage_bytes"])
+        elif action == "permanent" and folder.is_deleted:
+            for file_item in FileItem.objects.filter(folder_id__in=folder_ids):
+                if file_item.file:
+                    file_item.file.delete(save=False)
+            folder.delete()
+        return redirect("trash-page")
+
+
+class ShareLinkRevokePageView(LoginRequiredMixin, View):
+    def post(self, request, pk):
+        ShareLink.objects.filter(pk=pk, created_by=request.user).update(is_active=False)
+        return redirect("shared-links-page")
 
 
 class FolderListCreateAPIView(generics.ListCreateAPIView):
@@ -180,8 +463,26 @@ class FolderDetailAPIView(generics.RetrieveUpdateDestroyAPIView):
         )
 
     def perform_destroy(self, instance):
-        instance.is_deleted = True
-        instance.save()
+        folder_ids = folder_tree_ids(instance)
+        deleted_at = timezone.now()
+        files = FileItem.objects.active().filter(folder_id__in=folder_ids)
+        removed_size = files.aggregate(total=Sum("size_bytes"))["total"] or 0
+
+        with transaction.atomic():
+            Folder.objects.filter(id__in=folder_ids).update(
+                is_deleted=True,
+                deleted_at=deleted_at,
+            )
+            files.update(is_deleted=True, deleted_at=deleted_at)
+            profile, _ = Profile.objects.get_or_create(user=self.request.user)
+            profile.used_storage_bytes = max(0, profile.used_storage_bytes - removed_size)
+            profile.save(update_fields=["used_storage_bytes"])
+            ActivityLog.objects.create(
+                user=self.request.user,
+                action=ActivityLog.ACTION_DELETE,
+                folder=instance,
+                detail=f"Moved folder {instance.name} to trash",
+            )
 
 
 class FolderRestoreAPIView(APIView):
@@ -201,12 +502,32 @@ class FolderRestoreAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        folder.is_deleted = False
+        folder_ids = folder_tree_ids(folder)
+        files = FileItem.objects.filter(folder_id__in=folder_ids, is_deleted=True)
+        restore_size = files.aggregate(total=Sum("size_bytes"))["total"] or 0
+        profile, _ = Profile.objects.get_or_create(user=request.user)
+        if not profile.can_upload(restore_size):
+            return Response(
+                {"detail": "Not enough storage quota to restore this folder."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        try:
-            folder.save()
-        except DjangoValidationError as error:
-            return Response(error.message_dict, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            Folder.objects.filter(id__in=folder_ids).update(
+                is_deleted=False,
+                deleted_at=None,
+            )
+            files.update(is_deleted=False, deleted_at=None)
+            profile.used_storage_bytes += restore_size
+            profile.save(update_fields=["used_storage_bytes"])
+            ActivityLog.objects.create(
+                user=request.user,
+                action=ActivityLog.ACTION_RESTORE,
+                folder=folder,
+                detail=f"Restored folder {folder.name}",
+            )
+
+        folder.refresh_from_db()
 
         return Response(FolderSerializer(folder).data, status=status.HTTP_200_OK)
 
@@ -227,6 +548,25 @@ class FileListAPIView(generics.ListAPIView):
         keyword = self.request.query_params.get("q", "").strip()
         if keyword:
             queryset = queryset.search(keyword)
+
+        folder_id = self.request.query_params.get("folder")
+        if folder_id:
+            queryset = queryset.in_folder(folder_id)
+
+        if self.request.query_params.get("starred") in {"1", "true"}:
+            queryset = queryset.starred()
+
+        file_type = self.request.query_params.get("type", "").strip()
+        if file_type:
+            queryset = queryset.by_type(file_type)
+
+        min_bytes = self.request.query_params.get("min_bytes")
+        max_bytes = self.request.query_params.get("max_bytes")
+        if min_bytes or max_bytes:
+            queryset = queryset.size_between(
+                int(min_bytes) if min_bytes else None,
+                int(max_bytes) if max_bytes else None,
+            )
 
         return queryset
 
@@ -356,6 +696,57 @@ class FileRestoreAPIView(APIView):
         return Response(FileListSerializer(file_item).data, status=status.HTTP_200_OK)
 
 
+class FileStarAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+    is_starred = True
+
+    def post(self, request, pk):
+        file_item = get_object_or_404(
+            FileItem.objects.active(),
+            pk=pk,
+            owner=request.user,
+        )
+        file_item.is_starred = self.is_starred
+        file_item.save(update_fields=["is_starred", "updated_at"])
+        return Response({"id": file_item.pk, "is_starred": file_item.is_starred})
+
+
+class FileUnstarAPIView(FileStarAPIView):
+    is_starred = False
+
+
+class FilePermanentDeleteAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        file_item = get_object_or_404(
+            FileItem.objects.trash(),
+            pk=pk,
+            owner=request.user,
+        )
+        if file_item.file:
+            file_item.file.delete(save=False)
+        file_item.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class FolderPermanentDeleteAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        folder = get_object_or_404(
+            Folder.objects.trash(),
+            pk=pk,
+            owner=request.user,
+        )
+        folder_ids = folder_tree_ids(folder)
+        for file_item in FileItem.objects.filter(folder_id__in=folder_ids):
+            if file_item.file:
+                file_item.file.delete(save=False)
+        folder.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 class ShareLinkListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = ShareLinkSerializer
     permission_classes = [IsAuthenticated]
@@ -416,8 +807,20 @@ class SharedFileViewAPIView(generics.RetrieveAPIView):
 class FileDownloadAPIView(APIView):
     permission_classes = [CanDownloadFile]
 
+    def dispatch(self, request, *args, **kwargs):
+        self.file_item = get_object_or_404(
+            FileItem.objects.active().select_related("owner", "folder"),
+            pk=kwargs["pk"],
+        )
+        if self.file_item.status != FileItem.STATUS_READY:
+            return JsonResponse(
+                {"detail": "File is not ready for download."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return super().dispatch(request, *args, **kwargs)
+
     def get(self, request, pk):
-        file_item = get_object_or_404(FileItem.objects.active(), pk=pk)
+        file_item = self.file_item
         self.check_object_permissions(request, file_item)
 
         FileItem.objects.filter(pk=file_item.pk).update(

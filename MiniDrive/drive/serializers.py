@@ -92,6 +92,7 @@ class FileListSerializer(serializers.ModelSerializer):
             "owner_username",
             "mime_type",
             "size_bytes",
+            "description",
             "status",
             "is_starred",
             "download_count",
@@ -116,7 +117,26 @@ class FileUploadSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = FileItem
-        fields = ["file", "folder_id", "description", "labels"]
+        fields = [
+            "id",
+            "file",
+            "name",
+            "folder_id",
+            "description",
+            "labels",
+            "size_bytes",
+            "mime_type",
+            "status",
+            "created_at",
+        ]
+        read_only_fields = [
+            "id",
+            "name",
+            "size_bytes",
+            "mime_type",
+            "status",
+            "created_at",
+        ]
 
     def validate_file(self, value):
         max_size = 20 * 1024 * 1024
