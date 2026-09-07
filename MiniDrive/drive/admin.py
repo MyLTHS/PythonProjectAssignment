@@ -40,15 +40,7 @@ class ProfileAdmin(admin.ModelAdmin):
 
     @admin.action(description="Recalculate selected users' storage")
     def recalculate_storage(self, request, queryset):
-        profiles = list(queryset.select_related("user"))
-        for profile in profiles:
-            profile.used_storage_bytes = (
-                FileItem.objects.active()
-                .filter(owner=profile.user)
-                .aggregate(total=Sum("size_bytes"))["total"]
-                or 0
-            )
-        Profile.objects.bulk_update(profiles, ["used_storage_bytes"])
+        recalculate_storage_for_users(queryset.values_list("user_id", flat=True))
 
     actions = ("recalculate_storage",)
 

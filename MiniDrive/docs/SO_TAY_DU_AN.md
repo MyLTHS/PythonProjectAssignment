@@ -2,7 +2,7 @@
 
 Tài liệu này giúp bạn đọc MiniDrive theo đúng thứ tự, hiểu phần nào đang chạy thật,
 phần nào mới là nền móng, và biết nên làm gì tiếp theo. Nội dung được đối chiếu với
-mã nguồn và 5 test hiện có của dự án.
+mã nguồn và bộ test hiện có của dự án.
 
 ## 1. MiniDrive đang giải quyết bài toán gì?
 
@@ -13,7 +13,7 @@ Người dùng dự kiến có thể:
 - tạo thư mục dạng cây;
 - tải file lên hoặc lưu liên kết ngoài;
 - tìm kiếm, gắn nhãn, đánh dấu sao và đưa file vào thùng rác;
-- chia sẻ file bằng link hoặc chia sẻ trực tiếp cho người dùng khác;
+- chia sẻ file bằng link; `FileShare` là phần bonus ở mức model/admin;
 - kiểm soát quyền xem và tải file;
 - ghi lại lịch sử hoạt động;
 - xử lý các việc lâu như quét file hoặc dọn thùng rác ở chế độ nền.
@@ -60,13 +60,14 @@ xác định người gửi request là ai; permission quyết định người 
 | `drive/models.py` | Dữ liệu, quan hệ, validation, QuerySet và Manager |
 | `drive/forms.py` | Validation dành cho form HTML |
 | `drive/serializers.py` | Chuyển đổi và validation dữ liệu dành cho REST API |
+| `drive/upload_policy.py` | Chính sách extension, MIME type và giới hạn upload dùng chung |
 | `drive/authentication.py` | Đổi tiền tố token của DRF từ `Token` thành `Bearer` |
 | `drive/permissions.py` | Quyền trên từng đối tượng file |
 | `drive/views.py` | Dashboard, authentication, folder, file, share và staff API |
 | `drive/urls.py` | URL Dashboard và các endpoint REST API |
 | `drive/tasks.py` | Task scan file, dọn trash, hết hạn link và tính lại dung lượng |
 | `drive/admin.py` | Cấu hình quản trị cho 7 model |
-| `drive/tests.py` | 5 test cho custom manager và Dashboard |
+| `drive/tests.py` | Bộ test cho model, manager, view, API, admin và Celery |
 | `templates/base.html` | Khung HTML dùng chung |
 | `templates/dashboard.html` | Hiển thị dung lượng, tìm kiếm, root folder và root file |
 | `drive/migrations/0001_initial.py` | Lịch sử tạo schema database ban đầu |
@@ -85,7 +86,8 @@ Từ thư mục gốc repository, chạy:
 ./.venv/bin/python MiniDrive/manage.py test drive
 ```
 
-Kết quả hiện tại phải là `System check identified no issues` và `Ran 5 tests ... OK`.
+Kết quả hiện tại phải là `System check identified no issues` và toàn bộ test phải
+hoàn thành với trạng thái `OK`.
 
 ### Bước 2: chuẩn bị database
 
@@ -185,8 +187,9 @@ Biểu diễn chia sẻ trực tiếp từ `shared_by` tới `shared_with`, vớ
 `editor`. Validation cấm tự chia sẻ, cấm chia sẻ file trong trash và yêu cầu
 `shared_by` là owner.
 
-Lưu ý: model này có `clean()` nhưng không override `save()` để gọi `full_clean()`.
-Vì vậy `FileShare.objects.create(...)` không tự chạy các validation trên.
+`save()` của model gọi `full_clean()`, vì vậy validation domain cũng chạy khi tạo
+`FileShare.objects.create(...)`. Đây là bảng bonus; luồng chính của bài tập dùng
+`ShareLink`.
 
 ### `ActivityLog`
 
@@ -442,7 +445,7 @@ hiển thị kết quả mà không tải lại trang.
 |---|---|
 | Models và migration ban đầu | Có và database tạo được |
 | Custom QuerySet/Manager | Có, 3 test kiểm tra method tồn tại |
-| Dashboard `/` | Có đăng nhập, tìm kiếm và AJAX upload |
+| Dashboard `/` | Có đăng nhập, tìm kiếm, bộ lọc và AJAX upload |
 | Django admin | Có list display, filter, search, readonly và action |
 | Forms | Đã viết cho validation HTML |
 | Serializers và API | Đã nối folder, file, trash, share, log và staff report |
@@ -468,7 +471,7 @@ hiển thị kết quả mà không tải lại trang.
 3. File API với upload, tìm kiếm, update, trash và restore.
 4. Share link, object permission, xem và download file.
 5. Activity log và staff report.
-6. AJAX upload bằng `FormData` và CSRF.
+6. AJAX upload bằng `FormData` và CSRF, hỗ trợ file thật hoặc external URL cùng labels.
 7. Celery scan, purge trash, expire link và tính lại dung lượng.
 8. Admin có cột, filter, search, readonly và action.
 
