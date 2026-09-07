@@ -45,6 +45,15 @@ table {
     width: 100%;
 }
 
+.table-scroll {
+    max-width: 100%;
+    overflow-x: auto;
+}
+
+.table-scroll table {
+    min-width: 560px;
+}
+
 th, td {
     border-bottom: 1px solid #ddd;
     padding: 9px;
@@ -57,5 +66,30 @@ th, td {
 
 @media (max-width: 600px) {
     body { padding: 14px; }
-    table { font-size: 14px; }
+    .table-scroll table { min-width: 0; }
+    .table-scroll thead { display: none; }
+    .table-scroll table,
+    .table-scroll tbody,
+    .table-scroll tr,
+    .table-scroll td {
+        display: block;
+        width: 100%;
+    }
+    .table-scroll tr {
+        border-bottom: 1px solid #bbb;
+        padding: 8px 0;
+    }
+    .table-scroll td {
+        border: 0;
+        box-sizing: border-box;
+        display: grid;
+        gap: 8px;
+        grid-template-columns: 104px minmax(0, 1fr);
+        overflow-wrap: anywhere;
+        padding: 5px 0;
+    }
+    .table-scroll td::before {
+        content: attr(data-label);
+        font-weight: bold;
+    }
 }

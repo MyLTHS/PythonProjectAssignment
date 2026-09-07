@@ -10,7 +10,7 @@
         <select id="upload-folder" name="folder_id">
             <option value="">Root</option>
             {% for folder in upload_folders %}
-                <option value="{{ folder.id }}">{{ folder.name }}</option>
+                <option value="{{ folder.id }}">{{ folder.path }}</option>
             {% endfor %}
         </select>
     </p>

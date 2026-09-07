@@ -117,8 +117,19 @@ class Folder(models.Model):
     def __str__(self):
         return self.name
 
+    @property
+    def path(self):
+        names = [self.name]
+        parent = self.parent
+        visited_ids = {self.pk}
+        while parent and parent.pk not in visited_ids:
+            names.append(parent.name)
+            visited_ids.add(parent.pk)
+            parent = parent.parent
+        return " / ".join(reversed(names))
+
     def clean(self):
-        if not self.name.strip():
+        if self.name and not self.name.strip():
             raise ValidationError({"name": "Folder name cannot be empty."})
 
         ancestor = self.parent

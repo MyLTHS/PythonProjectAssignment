@@ -2,25 +2,49 @@ from django import forms
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
-
 from . import models
-from .models import Folder, Label, FileItem
+from .models import FileItem, Folder, Label
+
+
+class FolderChoiceField(forms.ModelChoiceField):
+    def label_from_instance(self, folder):
+        return folder.path
 
 
 class FolderForm(forms.ModelForm):
+    parent = FolderChoiceField(
+        queryset=Folder.objects.none(),
+        required=False,
+        empty_label="Root",
+    )
+
     class Meta:
         model = models.Folder
-        fields = ['name', 'parent']
+        fields = ["name", "parent"]
 
-    def __init__(self,*args, owner = None, **kwargs):
+    def __init__(self, *args, owner=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.owner = owner
 
         if owner:
-            self.fields["parent"].queryset = Folder.objects.filter(
+            folders = Folder.objects.filter(
                 owner=owner,
                 is_deleted=False,
-            )
+            ).order_by("name")
+
+            if self.instance.pk:
+                excluded_ids = {self.instance.pk}
+                pending_ids = [self.instance.pk]
+                while pending_ids:
+                    pending_ids = list(
+                        Folder.objects.filter(parent_id__in=pending_ids).values_list(
+                            "pk", flat=True
+                        )
+                    )
+                    excluded_ids.update(pending_ids)
+                folders = folders.exclude(pk__in=excluded_ids)
+
+            self.fields["parent"].queryset = folders
 
     def clean_name(self):
         name = self.cleaned_data["name"].strip()
@@ -44,26 +68,35 @@ class FolderForm(forms.ModelForm):
             self.add_error("parent", "A folder cannot be its own parent.")
 
         duplicate_qs = Folder.objects.filter(
-            owner = self.owner,
-            parent = parent,
-            name = name
+            owner=self.owner,
+            parent=parent,
+            name=name,
         )
 
         if self.instance.pk:
             duplicate_qs = duplicate_qs.exclude(pk=self.instance.pk)
 
         if name and duplicate_qs.exists():
-            self.add_error("name", "A folder with this name already exists in the same parent.")
+            self.add_error(
+                "name",
+                "A folder with this name already exists in the same parent.",
+            )
 
         return cleaned_data
 
 
 class FileMetadataForm(forms.ModelForm):
+    folder = FolderChoiceField(
+        queryset=Folder.objects.none(),
+        required=False,
+        empty_label="Root",
+    )
+
     class Meta:
         model = models.FileItem
-        fields = ['name', 'folder', 'description', 'labels']
+        fields = ["name", "folder", "description", "labels"]
 
-    def __init__(self, *args,owner = None, **kwargs):
+    def __init__(self, *args, owner=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.owner = owner
 
@@ -72,15 +105,13 @@ class FileMetadataForm(forms.ModelForm):
                 owner=owner,
                 is_deleted=False,
             )
-        self.fields["labels"].queryset = Label.objects.all()
-
+        self.fields["labels"].queryset = Label.objects.all().order_by("name")
 
     def clean_name(self):
         name = self.cleaned_data["name"].strip()
         if not name:
             raise forms.ValidationError("Please enter a name.")
         return name
-
 
     def clean(self):
         cleaned_data = super().clean()
@@ -103,9 +134,6 @@ class FileMetadataForm(forms.ModelForm):
             self.add_error("folder", "Cannot move file into a deleted folder.")
 
         return cleaned_data
-
-
-
 
 
 class ShareLinkForm(forms.ModelForm):

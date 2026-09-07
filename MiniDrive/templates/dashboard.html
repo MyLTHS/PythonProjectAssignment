@@ -41,7 +41,7 @@
     </section>
 
     <section>
-        <h3>Root files</h3>
+        <h3>{% if keyword %}Search results{% else %}Root files{% endif %}</h3>
         <ul id="root-file-list">
             {% for file in root_files %}
                 <li>

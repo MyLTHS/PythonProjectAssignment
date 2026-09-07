@@ -7,3 +7,5 @@ MiniDrive/db.sqlite3
 MiniDrive/media/
 celerybeat-schedule
 *.log
+.gstack/
+.coverage

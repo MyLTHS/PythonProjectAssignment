@@ -26,9 +26,13 @@
         {% for file in files %}
             <li>
                 {{ file.name }} - deleted {{ file.deleted_at|timesince }} ago
-                <form class="inline" method="post" action="{% url 'file-trash-page-action' file.id 'restore' %}">
-                    {% csrf_token %}<button type="submit">Restore</button>
-                </form>
+                {% if file.folder and file.folder.is_deleted %}
+                    <span>Restore the parent folder first.</span>
+                {% else %}
+                    <form class="inline" method="post" action="{% url 'file-trash-page-action' file.id 'restore' %}">
+                        {% csrf_token %}<button type="submit">Restore</button>
+                    </form>
+                {% endif %}
                 <form class="inline" method="post" action="{% url 'file-trash-page-action' file.id 'permanent' %}">
                     {% csrf_token %}<button type="submit">Delete permanently</button>
                 </form>
