@@ -12,7 +12,12 @@ from django.urls import reverse
 from django.utils import timezone
 
 from .models import ActivityLog, FileItem, FileShare, Folder, Label, Profile, ShareLink
-from .tasks import purge_trash, scan_uploaded_file
+from .tasks import (
+    expire_share_links,
+    purge_trash,
+    recalculate_user_storage,
+    scan_uploaded_file,
+)
 from .admin import FolderAdmin
 
 
@@ -133,6 +138,7 @@ class DashboardViewTests(TestCase):
         self.assertNotContains(response, "nested.txt")
         self.assertNotContains(response, "trash.txt")
         self.assertNotContains(response, "other.txt")
+        self.assertContains(response, "Root Work / Child Folder", count=2)
         self.assertEqual(
             response.context["storage_used_bytes"],
             root_file.size_bytes + nested_file.size_bytes,
@@ -163,6 +169,7 @@ class DashboardViewTests(TestCase):
         response = self.client.get(reverse("dashboard"), {"q": "monthly"})
 
         self.assertContains(response, "monthly-report.txt")
+        self.assertContains(response, "Search results")
 
 
 class UserFlowTests(TestCase):
@@ -260,6 +267,35 @@ class UserFlowTests(TestCase):
         self.folder.refresh_from_db()
         self.assertEqual(self.folder.name, "Renamed")
 
+    def test_duplicate_folder_name_shows_only_the_duplicate_error(self):
+        response = self.client.post(
+            reverse("dashboard"),
+            {"name": self.folder.name, "parent": ""},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.context["folder_form"].errors["name"],
+            ["A folder with this name already exists in the same parent."],
+        )
+
+    def test_folder_edit_parent_choices_exclude_itself_and_descendants(self):
+        child = Folder.objects.create(
+            owner=self.user,
+            parent=self.folder,
+            name="Child",
+        )
+
+        response = self.client.get(
+            reverse("folder-detail-page", args=[self.folder.pk])
+        )
+        parent_queryset = response.context["folder_edit_form"].fields[
+            "parent"
+        ].queryset
+
+        self.assertNotIn(self.folder, parent_queryset)
+        self.assertNotIn(child, parent_queryset)
+
     def test_user_can_star_and_unstar_from_web_pages(self):
         star_response = self.client.post(
             reverse("file-star-page-action", args=[self.file_item.pk, "star"])
@@ -300,6 +336,22 @@ class UserFlowTests(TestCase):
         self.assertRedirects(response, reverse("trash-page"))
         self.file_item.refresh_from_db()
         self.assertTrue(self.file_item.is_deleted)
+
+    def test_trash_page_explains_when_parent_folder_must_be_restored(self):
+        self.file_item.folder = self.folder
+        self.file_item.save()
+        Folder.objects.filter(pk=self.folder.pk).update(
+            is_deleted=True,
+            deleted_at=timezone.now(),
+        )
+        FileItem.objects.filter(pk=self.file_item.pk).update(
+            is_deleted=True,
+            deleted_at=timezone.now(),
+        )
+
+        response = self.client.get(reverse("trash-page"))
+
+        self.assertContains(response, "Restore the parent folder first")
 
     def test_folder_api_deletes_and_restores_its_files(self):
         child = Folder.objects.create(
@@ -376,6 +428,72 @@ class AssignmentApiTests(TestCase):
                 ).exists()
             )
             delay.assert_called_once_with(uploaded.pk)
+
+    def test_upload_rejects_an_invalid_extension(self):
+        response = self.client.post(
+            reverse("file-upload"),
+            {"file": SimpleUploadedFile("script.exe", b"not executable")},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("file", response.json())
+        self.assertFalse(FileItem.objects.filter(name="script.exe").exists())
+
+    def test_suspended_user_cannot_upload(self):
+        self.profile.is_suspended = True
+        self.profile.save(update_fields=["is_suspended"])
+
+        response = self.client.post(
+            reverse("file-upload"),
+            {"file": SimpleUploadedFile("blocked.txt", b"content")},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("suspended", str(response.json()).lower())
+
+    def test_user_cannot_upload_to_another_users_folder(self):
+        other_user = User.objects.create_user(username="upload-owner")
+        other_folder = Folder.objects.create(owner=other_user, name="Private")
+
+        response = self.client.post(
+            reverse("file-upload"),
+            {
+                "file": SimpleUploadedFile("private.txt", b"content"),
+                "folder_id": other_folder.pk,
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("folder_id", response.json())
+
+    def test_user_cannot_move_file_to_another_users_folder(self):
+        other_user = User.objects.create_user(username="move-owner")
+        other_folder = Folder.objects.create(owner=other_user, name="Private")
+
+        response = self.client.patch(
+            reverse("file-detail", args=[self.file_item.pk]),
+            {"folder_id": other_folder.pk},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("folder_id", response.json())
+
+    def test_file_in_trash_cannot_be_edited(self):
+        FileItem.objects.filter(pk=self.file_item.pk).update(
+            is_deleted=True,
+            deleted_at=timezone.now(),
+        )
+
+        response = self.client.patch(
+            reverse("file-detail", args=[self.file_item.pk]),
+            {"name": "changed.txt"},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.file_item.refresh_from_db()
+        self.assertEqual(self.file_item.name, "report.txt")
 
     def test_trash_has_separate_file_and_folder_endpoints(self):
         self.file_item.is_deleted = True
@@ -522,6 +640,22 @@ class AssignmentApiTests(TestCase):
 
 
 class ScanUploadedFileTests(TestCase):
+    def test_scan_marks_eicar_signature_as_infected(self):
+        user = User.objects.create_user(username="infected-owner")
+        file_item = FileItem.objects.create(
+            owner=user,
+            name="eicar.txt",
+            file=SimpleUploadedFile(
+                "eicar.txt",
+                b"EICAR-STANDARD-ANTIVIRUS-TEST-FILE",
+            ),
+        )
+
+        scan_uploaded_file(file_item.pk)
+
+        file_item.refresh_from_db()
+        self.assertEqual(file_item.status, FileItem.STATUS_INFECTED)
+
     def test_scan_blocks_a_file_with_an_invalid_mime_type(self):
         user = User.objects.create_user(username="scanner", password="secret123")
         file_item = FileItem.objects.create(
@@ -560,6 +694,59 @@ class ScanUploadedFileTests(TestCase):
 
             self.assertFalse(FileItem.objects.filter(pk=file_item.pk).exists())
             self.assertFalse(file_item.file.storage.exists(stored_name))
+
+    def test_expire_share_links_deactivates_expired_links(self):
+        user = User.objects.create_user(username="expired-link-owner")
+        file_item = FileItem.objects.create(
+            owner=user,
+            name="shared.txt",
+            file=SimpleUploadedFile("shared.txt", b"shared"),
+            status=FileItem.STATUS_READY,
+        )
+        share_link = ShareLink.objects.create(
+            file=file_item,
+            created_by=user,
+            expires_at=timezone.now() + timedelta(hours=1),
+        )
+        ShareLink.objects.filter(pk=share_link.pk).update(
+            expires_at=timezone.now() - timedelta(minutes=1)
+        )
+
+        result = expire_share_links()
+
+        share_link.refresh_from_db()
+        self.assertEqual(result, 1)
+        self.assertFalse(share_link.is_active)
+        self.assertTrue(
+            ActivityLog.objects.filter(
+                action=ActivityLog.ACTION_EXPIRE,
+                file=file_item,
+            ).exists()
+        )
+
+    def test_recalculate_user_storage_ignores_trashed_files(self):
+        user = User.objects.create_user(username="storage-owner")
+        profile = user.profile
+        active_file = FileItem.objects.create(
+            owner=user,
+            name="active.txt",
+            file=SimpleUploadedFile("active.txt", b"active"),
+            status=FileItem.STATUS_READY,
+        )
+        FileItem.objects.create(
+            owner=user,
+            name="deleted.txt",
+            file=SimpleUploadedFile("deleted.txt", b"deleted content"),
+            status=FileItem.STATUS_READY,
+            is_deleted=True,
+            deleted_at=timezone.now(),
+        )
+
+        result = recalculate_user_storage()
+
+        profile.refresh_from_db()
+        self.assertGreaterEqual(result, 1)
+        self.assertEqual(profile.used_storage_bytes, active_file.size_bytes)
 
 
 class AdminActionTests(TestCase):

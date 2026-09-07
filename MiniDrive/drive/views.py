@@ -384,7 +384,11 @@ class TrashPageView(LoginRequiredMixin, TemplateView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context["files"] = FileItem.objects.trash().owned_by(self.request.user)
+        context["files"] = (
+            FileItem.objects.trash()
+            .owned_by(self.request.user)
+            .select_related("folder")
+        )
         context["folders"] = Folder.objects.trash().filter(owner=self.request.user)
         return context
 

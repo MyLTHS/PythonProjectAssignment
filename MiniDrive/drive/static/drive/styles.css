@@ -54,8 +54,3 @@ th, td {
 .breadcrumb, .stats {
     color: #555;
 }
-
-@media (max-width: 600px) {
-    body { padding: 14px; }
-    table { font-size: 14px; }
-}
