@@ -71,11 +71,12 @@ Mỗi tài khoản có một Profile với quota mặc định là `5 GB`, dung 
 | `demo_user1` | `Reports` | `Documents` |
 | `demo_user2` | `Personal` | Root |
 
-| Owner | File | Nằm trong | Trạng thái | Label |
+| Owner | File | Nằm trong | Trạng thái | Ghi chú |
 |---|---|---|---|---|
-| `demo_user1` | `Django documentation` | `Documents` | Ready | Work |
-| `demo_user1` | `Monthly report` | `Documents/Reports` | Ready | Work, Important |
-| `demo_user2` | `Python website` | `Personal` | Ready | Important |
+| `demo_user1` | `Django documentation` | `Documents` | Ready | Label Work, đã Star |
+| `demo_user1` | `Monthly report` | `Documents/Reports` | Ready | Label Work và Important |
+| `demo_user1` | `Archived note` | Root | Trash | Dùng để thử Restore |
+| `demo_user2` | `Python website` | `Personal` | Ready | Label Important |
 
 Ba file trên dùng URL ngoài để có thể bấm thử mà không cần đưa file thật vào
 repository:
@@ -88,6 +89,11 @@ Python website:       https://www.python.org/
 
 Hai label được tạo sẵn là `Work` (`#1a73e8`) và `Important` (`#d93025`). ID của
 folder, file và label do database tự sinh nên không nên ghi cứng ID khi test API.
+
+`demo_user1` còn có hai share link đang hoạt động: một link View cho `Django
+documentation` và một link Download cho `Monthly report`. File `Monthly report`
+được chia sẻ trực tiếp cho `demo_user2` với quyền Viewer. Staff dashboard có ba
+activity log mẫu để kiểm tra phần Recent activity.
 
 ### Test nhanh bằng giao diện
 

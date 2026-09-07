@@ -11,7 +11,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from .models import ActivityLog, FileItem, Folder, Label, Profile, ShareLink
+from .models import ActivityLog, FileItem, FileShare, Folder, Label, Profile, ShareLink
 from .tasks import purge_trash, scan_uploaded_file
 from .admin import FolderAdmin
 
@@ -610,7 +610,13 @@ class SeedDriveCommandTests(TestCase):
         self.assertTrue(Label.objects.filter(name="Work", slug="work").exists())
         self.assertTrue(Label.objects.filter(name="Important", slug="important").exists())
         self.assertGreaterEqual(Folder.objects.count(), 3)
-        self.assertGreaterEqual(FileItem.objects.count(), 3)
+        self.assertGreaterEqual(FileItem.objects.count(), 4)
+        self.assertEqual(ShareLink.objects.filter(token__startswith="demo-").count(), 2)
+        self.assertEqual(FileShare.objects.filter(file__owner__username="demo_user1").count(), 1)
+        self.assertGreaterEqual(
+            ActivityLog.objects.filter(user__username__startswith="demo_").count(),
+            2,
+        )
 
     def test_seed_command_reuses_an_existing_slug(self):
         Label.objects.create(name="work", slug="work")
@@ -618,3 +624,6 @@ class SeedDriveCommandTests(TestCase):
         call_command("seed_drive", stdout=StringIO())
 
         self.assertEqual(Label.objects.filter(slug="work").count(), 1)
+        work = Label.objects.get(slug="work")
+        self.assertEqual(work.name, "Work")
+        self.assertEqual(work.color, "#1a73e8")
