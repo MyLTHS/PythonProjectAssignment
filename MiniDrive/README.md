@@ -15,12 +15,20 @@ source .venv/bin/activate
 pip install -r MiniDrive/requirements.txt
 cd MiniDrive
 python manage.py migrate
-python manage.py createsuperuser
+python manage.py createsuperuser  # không bắt buộc nếu dùng tài khoản seed bên dưới
 python manage.py runserver
 ```
 
 Mở `http://127.0.0.1:8000/`. File upload thật được lưu trong
 `MiniDrive/media/uploads/<năm>/<tháng>/`.
+
+Các trang thường dùng:
+
+```text
+http://127.0.0.1:8000/          Dashboard của user
+http://127.0.0.1:8000/staff/    Dashboard của staff
+http://127.0.0.1:8000/admin/    Django Admin
+```
 
 Chạy Redis, Celery worker và Celery beat ở hai terminal khác:
 
@@ -46,6 +54,12 @@ python manage.py seed_drive
 | `demo_user2` | `DemoUser123!` | User |
 
 Các mật khẩu này chỉ dùng để chấm bài hoặc chạy local, không dùng khi deploy thật.
+Lệnh `seed_drive` có thể chạy lại nhiều lần. Mỗi lần chạy, lệnh sẽ đặt lại đúng
+mật khẩu trong bảng trên và không tạo trùng tài khoản. Dữ liệu mẫu gồm folder
+`Documents`, folder con `Reports`, folder `Personal`, ba file và hai label.
+
+Đăng nhập nhanh trên giao diện bằng `demo_user1`. Muốn kiểm tra trang staff thì
+dùng `demo_staff`; muốn vào Django Admin thì dùng `demo_admin`.
 
 ## Authentication API
 
@@ -76,21 +90,44 @@ Các nhóm API chính nằm dưới `/api/folders/`, `/api/files/`, `/api/trash/
 Các endpoint chính:
 
 ```text
+POST         /api/auth/login/
+POST         /api/auth/logout/
 GET/POST     /api/folders/
 GET/PATCH/DELETE /api/folders/<id>/
 POST         /api/folders/<id>/restore/
+DELETE       /api/folders/<id>/permanent/
 GET          /api/files/
 POST         /api/files/upload/
 GET/PATCH/DELETE /api/files/<id>/
+POST         /api/files/<id>/restore/
+DELETE       /api/files/<id>/permanent/
 POST         /api/files/<id>/star/
 POST         /api/files/<id>/unstar/
+GET          /api/files/<id>/view/?token=<share-token>
 GET          /api/files/<id>/download/
 POST         /api/files/<id>/share-links/
+GET/POST     /api/share-links/
+DELETE       /api/share-links/<id>/
+GET          /api/activity-logs/
+GET          /api/trash/
 GET          /api/trash/files/
 GET          /api/trash/folders/
 GET          /api/staff/storage-stats/
 GET          /api/staff/file-summary/
 GET          /api/staff/activity-logs/
+GET          /api/staff/reports/
+```
+
+Kiểm tra nhanh đăng nhập và một API có yêu cầu xác thực:
+
+```bash
+TOKEN=$(curl -s -X POST http://127.0.0.1:8000/api/auth/login/ \
+  -H "Content-Type: application/json" \
+  -d '{"username":"demo_user1","password":"DemoUser123!"}' \
+  | python -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+
+curl http://127.0.0.1:8000/api/files/ \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ## Kiểm tra project
