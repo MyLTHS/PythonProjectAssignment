@@ -55,11 +55,50 @@ python manage.py seed_drive
 
 Các mật khẩu này chỉ dùng để chấm bài hoặc chạy local, không dùng khi deploy thật.
 Lệnh `seed_drive` có thể chạy lại nhiều lần. Mỗi lần chạy, lệnh sẽ đặt lại đúng
-mật khẩu trong bảng trên và không tạo trùng tài khoản. Dữ liệu mẫu gồm folder
-`Documents`, folder con `Reports`, folder `Personal`, ba file và hai label.
+mật khẩu trong bảng trên và không tạo trùng tài khoản.
 
 Đăng nhập nhanh trên giao diện bằng `demo_user1`. Muốn kiểm tra trang staff thì
 dùng `demo_staff`; muốn vào Django Admin thì dùng `demo_admin`.
+
+### Dữ liệu được tạo sẵn
+
+Mỗi tài khoản có một Profile với quota mặc định là `5 GB`, dung lượng đã dùng là
+`0 byte` và chưa bị khóa.
+
+| Owner | Folder | Parent |
+|---|---|---|
+| `demo_user1` | `Documents` | Root |
+| `demo_user1` | `Reports` | `Documents` |
+| `demo_user2` | `Personal` | Root |
+
+| Owner | File | Nằm trong | Trạng thái | Label |
+|---|---|---|---|---|
+| `demo_user1` | `Django documentation` | `Documents` | Ready | Work |
+| `demo_user1` | `Monthly report` | `Documents/Reports` | Ready | Work, Important |
+| `demo_user2` | `Python website` | `Personal` | Ready | Important |
+
+Ba file trên dùng URL ngoài để có thể bấm thử mà không cần đưa file thật vào
+repository:
+
+```text
+Django documentation: https://docs.djangoproject.com/
+Monthly report:       https://example.com/monthly-report
+Python website:       https://www.python.org/
+```
+
+Hai label được tạo sẵn là `Work` (`#1a73e8`) và `Important` (`#d93025`). ID của
+folder, file và label do database tự sinh nên không nên ghi cứng ID khi test API.
+
+### Test nhanh bằng giao diện
+
+1. Đăng nhập `demo_user1`, kiểm tra thấy folder `Documents` và file bên trong.
+2. Tạo một folder ở root, sau đó tạo folder con bằng cách chọn Parent.
+3. Upload một file nhỏ. File mới sẽ ở trạng thái Processing trước khi Celery scan.
+4. Sửa tên, mô tả hoặc label của file; thử đánh dấu sao rồi bỏ đánh dấu sao.
+5. Tạo share link với quyền View và Download, sau đó thử mở bằng token.
+6. Đưa file hoặc folder vào Trash, thử Restore rồi mới thử Delete permanently.
+7. Đăng nhập `demo_staff` để xem báo cáo; dùng `demo_admin` để kiểm tra dữ liệu ở
+   `/admin/`.
 
 ## Authentication API
 
