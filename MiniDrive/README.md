@@ -132,6 +132,11 @@ curl -X POST http://127.0.0.1:8000/api/auth/logout/ \
 Các nhóm API chính nằm dưới `/api/folders/`, `/api/files/`, `/api/trash/`,
 `/api/share-links/`, `/api/activity-logs/` và `/api/staff/`.
 
+Endpoint upload nhận `file` hoặc `external_url` (chỉ một trong hai), cùng với
+`folder_id`, `description` và nhiều `labels`. File upload thật được scan nền; external
+URL được đánh dấu Ready và khi tải sẽ redirect tới URL đó. Dashboard hỗ trợ lọc theo
+folder, starred, trash và MIME type; trang Trash vẫn xử lý đầy đủ restore và xóa vĩnh viễn.
+
 Các endpoint chính:
 
 ```text
@@ -174,6 +179,23 @@ TOKEN=$(curl -s -X POST http://127.0.0.1:8000/api/auth/login/ \
 curl http://127.0.0.1:8000/api/files/ \
   -H "Authorization: Bearer $TOKEN"
 ```
+
+### Kiểm tra AJAX upload trên trình duyệt
+
+1. Chạy Redis và Celery worker theo hướng dẫn ở trên, sau đó đăng nhập bằng
+   `demo_user1`.
+2. Ở Dashboard, chọn một file hợp lệ và bấm **Upload**. Trang phải giữ nguyên,
+   nút upload tạm khóa, thông báo chuyển sang `Uploading...`, rồi file mới xuất hiện
+   trong danh sách.
+3. Thử gửi khi chưa chọn file/URL, chọn file `.exe`, hoặc upload vào folder của user
+   khác. Thông báo lỗi phải xuất hiện dưới form và nút upload phải được bật lại.
+4. Mở DevTools → Network để xác nhận request là `POST /api/files/upload/`, có
+   `multipart/form-data` và header `X-CSRFToken`.
+5. Kiểm tra file upload thật nằm dưới `MiniDrive/media/uploads/`; trạng thái file
+   chuyển từ `processing` sang `ready` sau khi worker scan xong.
+
+`FileShare` là phần bonus ở mức model/admin và dữ liệu mẫu. Luồng chính của bài dùng
+`ShareLink`; project chưa coi `FileShare` là một tính năng “Shared with me” hoàn chỉnh.
 
 ## Kiểm tra project
 

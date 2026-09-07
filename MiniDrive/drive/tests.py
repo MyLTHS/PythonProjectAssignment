@@ -638,6 +638,124 @@ class AssignmentApiTests(TestCase):
         self.assertEqual(staff_response.status_code, 200)
         self.assertIn(user_response.status_code, {403, 404})
 
+    @override_settings(CELERY_TASK_ALWAYS_EAGER=False)
+    def test_external_url_upload_is_ready_without_enqueueing_scan(self):
+        with patch("drive.views.scan_uploaded_file.delay") as delay:
+            response = self.client.post(
+                reverse("file-upload"),
+                {
+                    "external_url": "https://example.com/report.pdf",
+                    "description": "External report",
+                },
+            )
+
+        self.assertEqual(response.status_code, 201)
+        uploaded = FileItem.objects.get(pk=response.json()["id"])
+        self.assertEqual(uploaded.external_url, "https://example.com/report.pdf")
+        self.assertEqual(uploaded.status, FileItem.STATUS_READY)
+        delay.assert_not_called()
+
+    def test_upload_rejects_both_file_and_external_url(self):
+        response = self.client.post(
+            reverse("file-upload"),
+            {
+                "file": SimpleUploadedFile("both.txt", b"content"),
+                "external_url": "https://example.com/both.txt",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("external_url", response.json())
+
+    def test_dashboard_upload_form_exposes_labels(self):
+        response = self.client.get(reverse("dashboard"))
+
+        self.assertContains(response, 'name="labels"')
+
+    def test_dashboard_filters_files_by_folder_starred_and_type(self):
+        nested = FileItem.objects.create(
+            owner=self.user,
+            folder=self.folder,
+            name="nested.pdf",
+            file=SimpleUploadedFile("nested.pdf", b"pdf"),
+            status=FileItem.STATUS_READY,
+        )
+        nested.is_starred = True
+        nested.save(update_fields=["is_starred", "updated_at"])
+        FileItem.objects.create(
+            owner=self.user,
+            name="root.txt",
+            file=SimpleUploadedFile("root.txt", b"txt"),
+            status=FileItem.STATUS_READY,
+        )
+
+        response = self.client.get(
+            reverse("dashboard"),
+            {"folder": self.folder.pk, "starred": "1", "type": "pdf"},
+        )
+
+        self.assertContains(response, "nested.pdf")
+        self.assertNotContains(response, "root.txt")
+
+    def test_dashboard_can_filter_trash_files(self):
+        trashed_file = FileItem.objects.create(
+            owner=self.user,
+            name="deleted.txt",
+            file=SimpleUploadedFile("deleted.txt", b"deleted"),
+            status=FileItem.STATUS_READY,
+            is_deleted=True,
+            deleted_at=timezone.now(),
+        )
+        active_file = FileItem.objects.create(
+            owner=self.user,
+            name="active.txt",
+            file=SimpleUploadedFile("active.txt", b"active"),
+            status=FileItem.STATUS_READY,
+        )
+
+        response = self.client.get(reverse("dashboard"), {"trash": "1"})
+
+        self.assertContains(response, trashed_file.name)
+        self.assertNotContains(response, active_file.name)
+        self.assertTrue(response.context["trash_filter"])
+
+    def test_permanent_delete_writes_activity_log(self):
+        self.file_item.is_deleted = True
+        self.file_item.save()
+
+        response = self.client.delete(
+            reverse("file-permanent-delete", args=[self.file_item.pk])
+        )
+
+        self.assertEqual(response.status_code, 204)
+        self.assertTrue(
+            ActivityLog.objects.filter(
+                user=self.user,
+                action=ActivityLog.ACTION_PURGE,
+                detail__contains="Permanently deleted",
+            ).exists()
+        )
+
+    def test_revoking_share_link_writes_activity_log(self):
+        share_link = ShareLink.objects.create(
+            file=self.file_item,
+            created_by=self.user,
+        )
+
+        response = self.client.post(
+            reverse("share-link-revoke-page", args=[share_link.pk])
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(
+            ActivityLog.objects.filter(
+                user=self.user,
+                action=ActivityLog.ACTION_EXPIRE,
+                file=self.file_item,
+                detail__contains="Revoked",
+            ).exists()
+        )
+
 
 class ScanUploadedFileTests(TestCase):
     def test_scan_marks_eicar_signature_as_infected(self):

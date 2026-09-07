@@ -3,7 +3,11 @@
     {% csrf_token %}
     <p>
         <label for="upload-file">File:</label>
-        <input id="upload-file" type="file" name="file" required>
+        <input id="upload-file" type="file" name="file">
+    </p>
+    <p>
+        <label for="upload-external-url">External URL:</label>
+        <input id="upload-external-url" type="url" name="external_url" placeholder="https://example.com/file.pdf">
     </p>
     <p>
         <label for="upload-folder">Folder:</label>
@@ -17,6 +21,14 @@
     <p>
         <label for="upload-description">Description:</label>
         <textarea id="upload-description" name="description"></textarea>
+    </p>
+    <p>
+        <label for="upload-labels">Labels:</label>
+        <select id="upload-labels" name="labels" multiple>
+            {% for label in upload_labels %}
+                <option value="{{ label.id }}">{{ label.name }}</option>
+            {% endfor %}
+        </select>
     </p>
     <button id="upload-button" type="submit">Upload</button>
 </form>
@@ -48,6 +60,12 @@
         const folderInput = document.getElementById("upload-folder");
         const formData = new FormData(uploadForm);
         const csrfToken = uploadForm.querySelector("[name=csrfmiddlewaretoken]").value;
+
+        if (!document.getElementById("upload-file").files.length &&
+            !document.getElementById("upload-external-url").value) {
+            uploadMessage.textContent = "Choose a file or enter an external URL.";
+            return;
+        }
 
         uploadButton.disabled = true;
         uploadMessage.textContent = "Uploading...";

@@ -2,6 +2,11 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from .models import ActivityLog, FileItem, Folder, Label, ShareLink
+from .upload_policy import (
+    ALLOWED_EXTENSIONS,
+    BLOCKED_EXTENSIONS,
+    MAX_UPLOAD_SIZE,
+)
 
 
 class FolderSerializer(serializers.ModelSerializer):
@@ -97,6 +102,7 @@ class FileListSerializer(serializers.ModelSerializer):
             "name",
             "folder_name",
             "owner_username",
+            "external_url",
             "mime_type",
             "size_bytes",
             "description",
@@ -127,6 +133,7 @@ class FileUploadSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "file",
+            "external_url",
             "name",
             "folder_id",
             "description",
@@ -146,30 +153,18 @@ class FileUploadSerializer(serializers.ModelSerializer):
         ]
 
     def validate_file(self, value):
-        max_size = 20 * 1024 * 1024
-        if value.size > max_size:
+        if value.size > MAX_UPLOAD_SIZE:
             raise serializers.ValidationError("File vượt quá 20MB.")
 
-        allowed_extensions = {
-            ".txt",
-            ".pdf",
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".csv",
-            ".xlsx",
-            ".zip",
-        }
-        blocked_extensions = {".exe", ".bat", ".sh"}
         file_name = value.name.lower()
 
-        for ext in blocked_extensions:
+        for ext in BLOCKED_EXTENSIONS:
             if file_name.endswith(ext):
                 raise serializers.ValidationError(
                     "Định dạng file này không được phép."
                 )
 
-        if not any(file_name.endswith(ext) for ext in allowed_extensions):
+        if not any(file_name.endswith(ext) for ext in ALLOWED_EXTENSIONS):
             raise serializers.ValidationError("Định dạng file không hợp lệ.")
 
         return value
@@ -190,6 +185,16 @@ class FileUploadSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Your account is suspended.")
 
         upload_file = attrs.get("file")
+        external_url = attrs.get("external_url")
+        if not upload_file and not external_url:
+            raise serializers.ValidationError(
+                {"file": "Provide either a file upload or an external URL."}
+            )
+        if upload_file and external_url:
+            raise serializers.ValidationError(
+                {"external_url": "Choose either a file upload or an external URL."}
+            )
+
         if upload_file and not profile.can_upload(upload_file.size):
             raise serializers.ValidationError("You do not have enough storage quota.")
 
@@ -211,7 +216,11 @@ class FileUploadSerializer(serializers.ModelSerializer):
 
         file_item = FileItem.objects.create(
             owner=request.user,
-            status=FileItem.STATUS_PROCESSING,
+            status=(
+                FileItem.STATUS_READY
+                if validated_data.get("external_url")
+                else FileItem.STATUS_PROCESSING
+            ),
             **validated_data,
         )
 

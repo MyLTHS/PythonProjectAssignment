@@ -4,6 +4,12 @@ from celery import shared_task
 from django.db.models import Sum
 
 from .models import ActivityLog, FileItem, Folder, Profile, ShareLink
+from .upload_policy import (
+    ALLOWED_EXTENSIONS,
+    ALLOWED_MIME_TYPES,
+    BLOCKED_EXTENSIONS,
+    MAX_UPLOAD_SIZE,
+)
 
 
 @shared_task
@@ -19,28 +25,15 @@ def scan_uploaded_file(file_id):
         file_item.file.close()
 
     extension = Path(file_item.name).suffix.lower()
-    allowed_extensions = {".txt", ".pdf", ".png", ".jpg", ".jpeg", ".csv", ".xlsx", ".zip"}
-    blocked_extensions = {".exe", ".bat", ".sh"}
-    allowed_mime_types = {
-        "text/plain",
-        "text/csv",
-        "application/pdf",
-        "image/png",
-        "image/jpeg",
-        "application/zip",
-        "application/x-zip-compressed",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    }
-    max_size = 20 * 1024 * 1024
     eicar_signature = b"EICAR-STANDARD-ANTIVIRUS-TEST-FILE"
 
     if eicar_signature in content:
         file_item.status = FileItem.STATUS_INFECTED
     elif (
-        extension in blocked_extensions
-        or extension not in allowed_extensions
-        or file_item.mime_type not in allowed_mime_types
-        or file_item.size_bytes > max_size
+        extension in BLOCKED_EXTENSIONS
+        or extension not in ALLOWED_EXTENSIONS
+        or file_item.mime_type not in ALLOWED_MIME_TYPES
+        or file_item.size_bytes > MAX_UPLOAD_SIZE
     ):
         file_item.status = FileItem.STATUS_BLOCKED
     else:

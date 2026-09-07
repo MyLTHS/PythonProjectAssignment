@@ -17,7 +17,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .forms import FileMetadataForm, FolderForm, ShareLinkForm
-from .models import ActivityLog, FileItem, Folder, Profile, ShareLink
+from .models import ActivityLog, FileItem, Folder, Label, Profile, ShareLink
 from .permissions import CanDownloadFile, CanViewFile, IsOwnerOrStaff
 from .serializers import (
     ActivityLogSerializer,
@@ -40,6 +40,23 @@ def folder_tree_ids(folder):
         ids.extend(children)
         pending = children
     return ids
+
+
+def _active_file_stats():
+    active_files = FileItem.objects.active()
+    return {
+        "total_files": active_files.count(),
+        "total_storage": active_files.aggregate(total=Sum("size_bytes"))["total"]
+        or 0,
+        "storage_by_user": list(FileItem.objects.storage_summary_by_user()),
+    }
+
+
+def _top_label_stats():
+    return [
+        {"id": label.id, "name": label.name, "file_count": label.file_count}
+        for label in FileItem.objects.top_labels()
+    ]
 
 
 class LoginAPIView(APIView):
@@ -119,33 +136,21 @@ class StaffReportAPIView(APIView):
     permission_classes = [IsAdminUser]
 
     def get(self, request):
-        storage_by_user = list(FileItem.objects.storage_summary_by_user())
-        file_types = list(FileItem.objects.file_type_summary())
-        top_labels = [
-            {
-                "id": label.id,
-                "name": label.name,
-                "file_count": label.file_count,
-            }
-            for label in FileItem.objects.top_labels()
-        ]
+        file_stats = _active_file_stats()
 
         return Response(
             {
                 "total_users": User.objects.count(),
-                "total_files": FileItem.objects.active().count(),
-                "total_storage": (
-                    FileItem.objects.active().aggregate(total=Sum("size_bytes"))["total"]
-                    or 0
-                ),
+                "total_files": file_stats["total_files"],
+                "total_storage": file_stats["total_storage"],
                 "trash_files": FileItem.objects.trash().count(),
                 "unsafe_files": FileItem.objects.filter(
                     status__in=[FileItem.STATUS_INFECTED, FileItem.STATUS_BLOCKED]
                 ).count(),
                 "expired_share_links": ShareLink.objects.expired().count(),
-                "storage_by_user": storage_by_user,
-                "file_types": file_types,
-                "top_labels": top_labels,
+                "storage_by_user": file_stats["storage_by_user"],
+                "file_types": list(FileItem.objects.file_type_summary()),
+                "top_labels": _top_label_stats(),
                 "recent_activity": ActivityLogSerializer(
                     ActivityLog.objects.select_related("user", "file", "folder")
                     .all()
@@ -160,14 +165,13 @@ class StaffStorageStatsAPIView(APIView):
     permission_classes = [IsAdminUser]
 
     def get(self, request):
-        active_files = FileItem.objects.active()
+        file_stats = _active_file_stats()
         return Response(
             {
                 "total_users": User.objects.count(),
-                "total_files": active_files.count(),
-                "total_storage": active_files.aggregate(total=Sum("size_bytes"))["total"]
-                or 0,
-                "storage_by_user": list(FileItem.objects.storage_summary_by_user()),
+                "total_files": file_stats["total_files"],
+                "total_storage": file_stats["total_storage"],
+                "storage_by_user": file_stats["storage_by_user"],
             }
         )
 
@@ -176,10 +180,6 @@ class StaffFileSummaryAPIView(APIView):
     permission_classes = [IsAdminUser]
 
     def get(self, request):
-        top_labels = [
-            {"id": label.id, "name": label.name, "file_count": label.file_count}
-            for label in FileItem.objects.top_labels()
-        ]
         return Response(
             {
                 "file_types": list(FileItem.objects.file_type_summary()),
@@ -188,7 +188,7 @@ class StaffFileSummaryAPIView(APIView):
                     status__in=[FileItem.STATUS_INFECTED, FileItem.STATUS_BLOCKED]
                 ).count(),
                 "expired_share_links": ShareLink.objects.expired().count(),
-                "top_labels": top_labels,
+                "top_labels": _top_label_stats(),
             }
         )
 
@@ -209,8 +209,29 @@ class DashboardView(LoginRequiredMixin, TemplateView):
         active_files = FileItem.objects.active().filter(owner=owner)
         root_files = active_files.filter(folder__isnull=True)
 
-        if keyword:
-            root_files = active_files.search(keyword)
+        folder_filter = self.request.GET.get("folder", "").strip()
+        starred_filter = self.request.GET.get("starred") in {"1", "true", "on"}
+        trash_filter = self.request.GET.get("trash") in {"1", "true", "on"}
+        file_type_filter = self.request.GET.get("type", "").strip()
+
+        if trash_filter:
+            root_files = FileItem.objects.trash().filter(owner=owner)
+            root_folders = Folder.objects.trash().filter(owner=owner).order_by("name")
+        elif keyword or folder_filter or starred_filter or file_type_filter:
+            root_files = active_files
+
+        if keyword or folder_filter or starred_filter or file_type_filter or trash_filter:
+            if folder_filter:
+                try:
+                    root_files = root_files.in_folder(int(folder_filter))
+                except ValueError:
+                    root_files = root_files.none()
+            if starred_filter:
+                root_files = root_files.filter(is_starred=True)
+            if file_type_filter:
+                root_files = root_files.by_type(file_type_filter)
+            if keyword:
+                root_files = root_files.search(keyword)
             root_folders = root_folders.filter(name__icontains=keyword)
 
         storage_used_bytes = (
@@ -220,8 +241,13 @@ class DashboardView(LoginRequiredMixin, TemplateView):
         context.update(
             {
                 "keyword": keyword,
+                "folder_filter": folder_filter,
+                "starred_filter": starred_filter,
+                "trash_filter": trash_filter,
+                "file_type_filter": file_type_filter,
                 "root_folders": root_folders,
                 "upload_folders": upload_folders,
+                "upload_labels": Label.objects.all().order_by("name"),
                 "root_files": root_files,
                 "storage_used_bytes": storage_used_bytes,
                 "storage_quota_bytes": (
@@ -421,18 +447,18 @@ class StaffDashboardPageView(UserPassesTestMixin, TemplateView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        active_files = FileItem.objects.active()
+        file_stats = _active_file_stats()
         context.update(
             {
                 "total_users": User.objects.count(),
-                "total_files": active_files.count(),
-                "total_storage": active_files.aggregate(total=Sum("size_bytes"))["total"] or 0,
+                "total_files": file_stats["total_files"],
+                "total_storage": file_stats["total_storage"],
                 "trash_files": FileItem.objects.trash().count(),
                 "unsafe_files": FileItem.objects.filter(
                     status__in=[FileItem.STATUS_INFECTED, FileItem.STATUS_BLOCKED]
                 ).count(),
                 "expired_links": ShareLink.objects.expired().count(),
-                "top_users": FileItem.objects.storage_summary_by_user()[:5],
+                "top_users": file_stats["storage_by_user"][:5],
                 "recent_activity": ActivityLog.objects.select_related("user", "file")
                 .all()
                 .order_by("-created_at")[:10],
@@ -566,7 +592,19 @@ class FolderTrashPageActionView(LoginRequiredMixin, View):
 
 class ShareLinkRevokePageView(LoginRequiredMixin, View):
     def post(self, request, pk):
-        ShareLink.objects.filter(pk=pk, created_by=request.user).update(is_active=False)
+        link = get_object_or_404(
+            ShareLink.objects.filter(pk=pk, created_by=request.user).select_related(
+                "file", "file__folder"
+            )
+        )
+        ShareLink.objects.filter(pk=link.pk).update(is_active=False)
+        ActivityLog.objects.create(
+            user=request.user,
+            action=ActivityLog.ACTION_EXPIRE,
+            file=link.file,
+            folder=link.file.folder,
+            detail=f"Revoked share link for {link.file.name}",
+        )
         return redirect("shared-links-page")
 
 
@@ -732,9 +770,10 @@ class FileUploadAPIView(generics.CreateAPIView):
                 detail=f"Uploaded {file_item.name}",
             )
 
-            transaction.on_commit(
-                lambda: scan_uploaded_file.delay(file_item.id)
-            )
+            if file_item.file:
+                transaction.on_commit(
+                    lambda: scan_uploaded_file.delay(file_item.id)
+                )
 
 
 class FileDetailAPIView(generics.RetrieveUpdateDestroyAPIView):
@@ -889,6 +928,13 @@ class FilePermanentDeleteAPIView(APIView):
             pk=pk,
             owner=request.user,
         )
+        ActivityLog.objects.create(
+            user=request.user,
+            action=ActivityLog.ACTION_PURGE,
+            file=file_item,
+            folder=file_item.folder,
+            detail=f"Permanently deleted {file_item.name}",
+        )
         if file_item.file:
             file_item.file.delete(save=False)
         file_item.delete()
@@ -905,6 +951,12 @@ class FolderPermanentDeleteAPIView(APIView):
             owner=request.user,
         )
         folder_ids = folder_tree_ids(folder)
+        ActivityLog.objects.create(
+            user=request.user,
+            action=ActivityLog.ACTION_PURGE,
+            folder=folder,
+            detail=f"Permanently deleted folder {folder.name}",
+        )
         for file_item in FileItem.objects.filter(folder_id__in=folder_ids):
             if file_item.file:
                 file_item.file.delete(save=False)
@@ -971,6 +1023,13 @@ class ShareLinkDestroyAPIView(generics.DestroyAPIView):
 
     def perform_destroy(self, instance):
         ShareLink.objects.filter(pk=instance.pk).update(is_active=False)
+        ActivityLog.objects.create(
+            user=self.request.user,
+            action=ActivityLog.ACTION_EXPIRE,
+            file=instance.file,
+            folder=instance.file.folder,
+            detail=f"Revoked share link for {instance.file.name}",
+        )
 
 
 class SharedFileViewAPIView(generics.RetrieveAPIView):

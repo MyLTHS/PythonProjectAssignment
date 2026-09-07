@@ -25,6 +25,16 @@
     <section>
         <form method="get">
             <input type="text" name="q" value="{{ keyword }}" placeholder="Search files">
+            <label for="filter-folder">Folder:</label>
+            <select id="filter-folder" name="folder">
+                <option value="">All folders</option>
+                {% for folder in upload_folders %}
+                    <option value="{{ folder.id }}"{% if folder_filter == folder.id|stringformat:"s" %} selected{% endif %}>{{ folder.name }}</option>
+                {% endfor %}
+            </select>
+            <label><input type="checkbox" name="starred" value="1"{% if starred_filter %} checked{% endif %}> Starred</label>
+            <label><input type="checkbox" name="trash" value="1"{% if trash_filter %} checked{% endif %}> Trash</label>
+            <input type="text" name="type" value="{{ file_type_filter }}" placeholder="MIME type">
             <button type="submit">Search</button>
         </form>
     </section>
@@ -41,7 +51,7 @@
     </section>
 
     <section>
-        <h3>{% if keyword %}Search results{% else %}Root files{% endif %}</h3>
+        <h3>{% if trash_filter %}Trash files{% elif keyword %}Search results{% else %}Root files{% endif %}</h3>
         <ul id="root-file-list">
             {% for file in root_files %}
                 <li>
