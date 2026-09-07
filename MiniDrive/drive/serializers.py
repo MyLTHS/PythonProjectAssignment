@@ -32,11 +32,18 @@ class FolderSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         request = self.context.get("request")
-        owner = request.user if request else None
-        parent = attrs.get("parent")
+        request_user = request.user if request else None
+        owner = self.instance.owner if self.instance else request_user
+        parent = attrs.get(
+            "parent",
+            self.instance.parent if self.instance else None,
+        )
 
-        if not owner:
+        if not request_user:
             raise serializers.ValidationError("Authenticated user is required.")
+
+        if self.instance and self.instance.owner != request_user and not request_user.is_staff:
+            raise serializers.ValidationError("You cannot edit this folder.")
 
         if parent and parent.owner != owner:
             raise serializers.ValidationError(
@@ -48,10 +55,13 @@ class FolderSerializer(serializers.ModelSerializer):
                 {"parent": "Cannot place folder inside a deleted parent."}
             )
 
-        if self.instance and parent == self.instance:
-            raise serializers.ValidationError(
-                {"parent": "A folder cannot be its own parent."}
-            )
+        ancestor = parent
+        while self.instance and ancestor:
+            if ancestor == self.instance:
+                raise serializers.ValidationError(
+                    {"parent": "A folder cannot be inside itself."}
+                )
+            ancestor = ancestor.parent
 
         name = attrs.get("name", self.instance.name if self.instance else None)
         duplicate_qs = Folder.objects.filter(
@@ -89,6 +99,7 @@ class FileListSerializer(serializers.ModelSerializer):
             "owner_username",
             "mime_type",
             "size_bytes",
+            "description",
             "status",
             "is_starred",
             "download_count",
@@ -113,7 +124,26 @@ class FileUploadSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = FileItem
-        fields = ["file", "folder_id", "description", "labels"]
+        fields = [
+            "id",
+            "file",
+            "name",
+            "folder_id",
+            "description",
+            "labels",
+            "size_bytes",
+            "mime_type",
+            "status",
+            "created_at",
+        ]
+        read_only_fields = [
+            "id",
+            "name",
+            "size_bytes",
+            "mime_type",
+            "status",
+            "created_at",
+        ]
 
     def validate_file(self, value):
         max_size = 20 * 1024 * 1024
@@ -216,10 +246,10 @@ class FileUpdateSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         request = self.context.get("request")
-        owner = request.user if request else None
+        request_user = request.user if request else None
         folder = attrs.get("folder", self.instance.folder if self.instance else None)
 
-        if not owner:
+        if not request_user:
             raise serializers.ValidationError("Authenticated user is required.")
 
         if not self.instance:
@@ -227,7 +257,7 @@ class FileUpdateSerializer(serializers.ModelSerializer):
                 "This serializer is only for updating files."
             )
 
-        if self.instance.owner != owner:
+        if self.instance.owner != request_user and not request_user.is_staff:
             raise serializers.ValidationError(
                 "You cannot edit a file that does not belong to you."
             )
@@ -237,7 +267,7 @@ class FileUpdateSerializer(serializers.ModelSerializer):
                 "Cannot edit metadata of a file in trash."
             )
 
-        if folder and folder.owner != owner:
+        if folder and folder.owner != self.instance.owner:
             raise serializers.ValidationError(
                 {"folder_id": "Folder must belong to the same owner."}
             )
@@ -253,7 +283,24 @@ class FileUpdateSerializer(serializers.ModelSerializer):
 class ShareLinkSerializer(serializers.ModelSerializer):
     class Meta:
         model = ShareLink
-        fields = ["file", "permission", "recipient_email", "expires_at"]
+        fields = [
+            "id",
+            "file",
+            "token",
+            "permission",
+            "recipient_email",
+            "is_active",
+            "expires_at",
+            "view_count",
+            "created_at",
+        ]
+        read_only_fields = [
+            "id",
+            "token",
+            "is_active",
+            "view_count",
+            "created_at",
+        ]
 
     def validate(self, attrs):
         request = self.context.get("request")

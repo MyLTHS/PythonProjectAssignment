@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+    <section>
+        <h2>Dashboard</h2>
+        <p>Used storage: <span id="used-storage">{{ storage_used_bytes }}</span> bytes</p>
+        <p>Quota: {{ storage_quota_bytes }} bytes</p>
+    </section>
+
+    <section>
+        {% include "upload_form.html" %}
+    </section>
+
+    <section>
+        <h3>Create folder</h3>
+        <form method="post">
+            {% csrf_token %}
+            {{ folder_form.as_p }}
+            <button type="submit">Create folder</button>
+        </form>
+    </section>
+
+    <section>
+        <form method="get">
+            <input type="text" name="q" value="{{ keyword }}" placeholder="Search files">
+            <button type="submit">Search</button>
+        </form>
+    </section>
+
+    <section>
+        <h3>Root folders</h3>
+        <ul>
+            {% for folder in root_folders %}
+                <li><a href="{% url 'folder-detail-page' folder.id %}">{{ folder.name }}</a></li>
+            {% empty %}
+                <li>No folders yet.</li>
+            {% endfor %}
+        </ul>
+    </section>
+
+    <section>
+        <h3>Root files</h3>
+        <ul id="root-file-list">
+            {% for file in root_files %}
+                <li>
+                    <a href="{% url 'file-detail-page' file.id %}">{{ file.name|truncatechars:50 }}</a>
+                    <span>{{ file.size_bytes|filesizeformat }}</span>
+                </li>
+            {% empty %}
+                <li id="empty-file-message">No files yet.</li>
+            {% endfor %}
+        </ul>
+    </section>
+
+{% endblock %}

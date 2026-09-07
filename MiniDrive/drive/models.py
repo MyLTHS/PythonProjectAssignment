@@ -1,5 +1,6 @@
 import mimetypes
 import uuid
+from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth.models import User
@@ -63,7 +64,24 @@ class Label(models.Model):
         super().save(*args, **kwargs)
 
 
+class FolderQuerySet(models.QuerySet):
+    def active(self):
+        return self.filter(is_deleted=False)
+
+    def trash(self):
+        return self.filter(is_deleted=True)
+
+    def roots(self):
+        return self.active().filter(parent__isnull=True)
+
+    def due_for_purge(self, days=30):
+        cutoff = timezone.now() - timedelta(days=days)
+        return self.trash().filter(deleted_at__lte=cutoff)
+
+
 class Folder(models.Model):
+    objects = FolderQuerySet.as_manager()
+
     owner = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
@@ -82,6 +100,20 @@ class Folder(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["owner", "name"],
+                condition=models.Q(parent__isnull=True),
+                name="unique_root_folder_name_per_owner",
+            ),
+            models.UniqueConstraint(
+                fields=["owner", "parent", "name"],
+                condition=models.Q(parent__isnull=False),
+                name="unique_child_folder_name_per_owner",
+            ),
+        ]
+
     def __str__(self):
         return self.name
 
@@ -89,8 +121,15 @@ class Folder(models.Model):
         if not self.name.strip():
             raise ValidationError({"name": "Folder name cannot be empty."})
 
-        if self.parent and self.parent == self:
-            raise ValidationError({"parent": "A folder cannot be its own parent."})
+        ancestor = self.parent
+        visited_ids = set()
+        while ancestor:
+            if ancestor == self or ancestor.pk in visited_ids:
+                raise ValidationError(
+                    {"parent": "A folder cannot be inside itself."}
+                )
+            visited_ids.add(ancestor.pk)
+            ancestor = ancestor.parent
 
         if self.parent and self.parent.owner != self.owner:
             raise ValidationError(
@@ -124,8 +163,96 @@ class Folder(models.Model):
         self.full_clean()
         super().save(*args, **kwargs)
 
-#không hiểu cần phải đọc và tìm hiểu các phần này
+
+class FileItemQuerySet(models.QuerySet):
+    def active(self):
+        return self.filter(is_deleted=False).exclude(folder__is_deleted=True)
+
+    def trash(self):
+        return self.filter(is_deleted=True)
+
+    def starred(self):
+        return self.active().filter(is_starred=True)
+
+    def ready(self):
+        return self.active().filter(status=FileItem.STATUS_READY)
+
+    def in_folder(self, folder_id):
+        return self.filter(folder_id=folder_id)
+
+    def owned_by(self, user):
+        return self.filter(owner=user)
+
+    def by_type(self, file_type):
+        return self.filter(mime_type__contains=file_type)
+
+    def search(self, keyword):
+        if not keyword:
+            return self
+
+        return self.filter(
+            models.Q(name__icontains=keyword)
+            | models.Q(description__icontains=keyword)
+            | models.Q(labels__name__icontains=keyword)
+        ).distinct()
+
+    def size_between(self, min_bytes, max_bytes):
+        qs = self
+
+        if min_bytes is not None:
+            qs = qs.filter(size_bytes__gte=min_bytes)
+
+        if max_bytes is not None:
+            qs = qs.filter(size_bytes__lte=max_bytes)
+
+        return qs
+
+    def updated_between(self, start_date, end_date):
+        qs = self
+        if start_date is not None:
+            qs = qs.filter(updated_at__gte=start_date)
+        if end_date is not None:
+            qs = qs.filter(updated_at__lte=end_date)
+        return qs
+
+    def due_for_purge(self, days=30):
+        cutoff = timezone.now() - timedelta(days=days)
+        return self.filter(is_deleted=True, deleted_at__lte=cutoff)
+
+
+class FileItemManager(models.Manager.from_queryset(FileItemQuerySet)):
+    def storage_summary_by_user(self):
+        return (
+            self.active()
+            .values("owner__id", "owner__username")
+            .annotate(
+                total_storage=models.Sum("size_bytes"),
+                file_count=models.Count("id"),
+            )
+            .order_by("-total_storage")
+        )
+
+    def file_type_summary(self):
+        return (
+            self.active()
+            .values("mime_type")
+            .annotate(
+                file_count=models.Count("id"),
+                total_storage=models.Sum("size_bytes"),
+            )
+            .order_by("-file_count")
+        )
+
+    def top_labels(self, limit=5):
+        return (
+            Label.objects.annotate(file_count=models.Count("files"))
+            .order_by("-file_count", "name")[:limit]
+        )
+
+
 class FileItem(models.Model):
+    objects = FileItemManager()
+
     STATUS_PROCESSING = "processing"
     STATUS_READY = "ready"
     STATUS_INFECTED = "infected"
@@ -227,7 +354,23 @@ class FileItem(models.Model):
         super().save(*args, **kwargs)
 
 
+class ShareLinkQuerySet(models.QuerySet):
+    def active(self):
+        return self.filter(is_active=True).filter(
+            models.Q(expires_at__isnull=True) | models.Q(expires_at__gt=timezone.now())
+        )
+
+    def expired(self):
+        return self.filter(
+            is_active=True,
+            expires_at__isnull=False,
+            expires_at__lte=timezone.now(),
+        )
+
+
 class ShareLink(models.Model):
+    objects = ShareLinkQuerySet.as_manager()
+
     PERMISSION_VIEW = "view"
     PERMISSION_DOWNLOAD = "download"
     PERMISSION_CHOICES = [
@@ -397,3 +540,7 @@ class FileShare(models.Model):
             raise ValidationError(
                 {"shared_with": "shared_with must be different from shared_by."}
             )
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)

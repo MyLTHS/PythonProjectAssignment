@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+
+{% block title %}{{ folder.name }}{% endblock %}
+
+{% block content %}
+    <p class="breadcrumb">
+        <a href="{% url 'dashboard' %}">Home</a>
+        {% for item in breadcrumb %}
+            / <a href="{% url 'folder-detail-page' item.id %}">{{ item.name }}</a>
+        {% endfor %}
+    </p>
+
+    <h2>{{ folder.name }}</h2>
+    <form method="post" action="{% url 'folder-trash-page-action' folder.id 'delete' %}">
+        {% csrf_token %}
+        <button type="submit">Move folder to trash</button>
+    </form>
+
+    <section>
+        <h3>Edit folder</h3>
+        <form method="post">
+            {% csrf_token %}
+            {{ folder_edit_form.as_p }}
+            <button type="submit" name="action" value="edit">Save folder</button>
+        </form>
+    </section>
+
+    <section>
+        <h3>Create subfolder</h3>
+        <form method="post">
+            {% csrf_token %}
+            {{ folder_form.name.errors }}
+            {{ folder_form.name.label_tag }} {{ folder_form.name }}
+            <button type="submit">Create</button>
+        </form>
+    </section>
+
+    <section>
+        <h3>Folders</h3>
+        <ul>
+            {% for child in child_folders %}
+                <li><a href="{% url 'folder-detail-page' child.id %}">{{ child.name }}</a></li>
+            {% empty %}
+                <li>No subfolders.</li>
+            {% endfor %}
+        </ul>
+    </section>
+
+    <section>
+        <h3>Files</h3>
+        <ul>
+            {% for file in files %}
+                <li>
+                    <a href="{% url 'file-detail-page' file.id %}">{{ file.name|truncatechars:50 }}</a>
+                    - {{ file.size_bytes|filesizeformat }}
+                </li>
+            {% empty %}
+                <li>No files in this folder.</li>
+            {% endfor %}
+        </ul>
+    </section>
+{% endblock %}

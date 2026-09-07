@@ -117,6 +117,10 @@ class ShareLinkForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         self.file_item = file_item
         self.created_by = created_by
+        if file_item:
+            self.instance.file = file_item
+        if created_by:
+            self.instance.created_by = created_by
 
     def clean(self):
         cleaned_data = super().clean()

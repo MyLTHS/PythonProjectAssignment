@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block title %}{{ file.name }}{% endblock %}
+
+{% block content %}
+    <h2>{{ file.name|truncatechars:50 }}</h2>
+    <dl>
+        <dt>Size</dt><dd>{{ file.size_bytes|filesizeformat }}</dd>
+        <dt>Uploaded</dt><dd>{{ file.created_at|date:"d/m/Y H:i" }}</dd>
+        <dt>Description</dt><dd>{{ file.description|default:"No description" }}</dd>
+        <dt>Status</dt><dd>{{ file.get_status_display }}</dd>
+        <dt>Labels</dt>
+        <dd>
+            {% for label in file.labels.all %}
+                {{ label.name }}{% if not forloop.last %}, {% endif %}
+            {% empty %}
+                No labels
+            {% endfor %}
+        </dd>
+    </dl>
+
+    {% if file.status == "ready" %}
+        <p><a href="{% url 'file-download' file.id %}">Download</a></p>
+    {% elif file.status == "processing" %}
+        <p>This file is still being scanned.</p>
+    {% else %}
+        <p>This file cannot be downloaded.</p>
+    {% endif %}
+
+    <form method="post" action="{% url 'file-star-page-action' file.id 'unstar' %}">
+        {% csrf_token %}
+        {% if file.is_starred %}
+            <button type="submit">Unstar</button>
+        {% else %}
+            <button type="submit" formaction="{% url 'file-star-page-action' file.id 'star' %}">Star</button>
+        {% endif %}
+    </form>
+
+    <form method="post" action="{% url 'file-trash-page-action' file.id 'delete' %}">
+        {% csrf_token %}
+        <button type="submit">Move to trash</button>
+    </form>
+
+    <section>
+        <h3>Edit metadata</h3>
+        <form method="post">
+            {% csrf_token %}
+            {{ metadata_form.as_p }}
+            <button type="submit" name="action" value="metadata">Save</button>
+        </form>
+    </section>
+
+    <section>
+        <h3>Create share link</h3>
+        <form method="post">
+            {% csrf_token %}
+            {{ share_form.as_p }}
+            <button type="submit" name="action" value="share">Create link</button>
+        </form>
+    </section>
+{% endblock %}

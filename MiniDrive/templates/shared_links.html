@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Shared links{% endblock %}
+
+{% block content %}
+    <h2>Shared links</h2>
+    <table>
+        <thead>
+            <tr><th>File</th><th>Permission</th><th>Expires</th><th>Status</th><th>Action</th></tr>
+        </thead>
+        <tbody>
+            {% for link in share_links %}
+                <tr>
+                    <td>
+                        {% if link.permission == "download" %}
+                            <a href="{% url 'file-download' link.file.id %}?token={{ link.token }}">{{ link.file.name }}</a>
+                        {% else %}
+                            <a href="{% url 'shared-file-view' link.file.id %}?token={{ link.token }}">{{ link.file.name }}</a>
+                        {% endif %}
+                    </td>
+                    <td>{{ link.get_permission_display }}</td>
+                    <td>{{ link.expires_at|date:"d/m/Y H:i"|default:"Never" }}</td>
+                    <td>
+                        {% if link.is_valid %}Active{% else %}Inactive or expired{% endif %}
+                    </td>
+                    <td>
+                        {% if link.is_active %}
+                            <form method="post" action="{% url 'share-link-revoke-page' link.id %}">
+                                {% csrf_token %}<button type="submit">Revoke</button>
+                            </form>
+                        {% else %}
+                            -
+                        {% endif %}
+                    </td>
+                </tr>
+            {% empty %}
+                <tr><td colspan="5">No share links.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+{% endblock %}

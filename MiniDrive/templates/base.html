@@ -1,0 +1,35 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}MiniDrive{% endblock %}</title>
+    <link rel="stylesheet" href="{% static 'drive/styles.css' %}">
+</head>
+<body>
+    <header>
+        <h1>MiniDrive</h1>
+        {% if request.user.is_authenticated %}
+            <p>Welcome, {{ request.user.username }}</p>
+            <nav>
+                <a href="{% url 'dashboard' %}">Home</a>
+                <a href="{% url 'starred-page' %}">Starred</a>
+                <a href="{% url 'trash-page' %}">Trash</a>
+                <a href="{% url 'shared-links-page' %}">Shared links</a>
+                {% if request.user.is_staff %}
+                    <a href="{% url 'staff-dashboard-page' %}">Staff dashboard</a>
+                {% endif %}
+            </nav>
+            <form method="post" action="{% url 'logout' %}">
+                {% csrf_token %}
+                <button type="submit">Log out</button>
+            </form>
+        {% endif %}
+    </header>
+
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>
